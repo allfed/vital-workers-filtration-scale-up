@@ -998,12 +998,15 @@ def test_group_and_country_cadr_requirements(data_dir):
 
     settings = pd.read_csv(SCALE_UP_SETTINGS).set_index("setting")["value"]
     qer = float(settings["ashrae_scale_factor"])
-    u_new = float(settings["u_new"])
+    u_healthcare = float(settings["u_new_healthcare"])
+    u_other = float(settings["u_new_other"])
     mapped = ew._ashrae_mapped_groups(data_dir)
 
     def expected_net(group_name):
         row = mapped.loc[mapped["occupational_group"] == group_name].iloc[0]
-        u_base = 0.30 if row["occupancy_group"] == "Health care" else 0.0
+        is_healthcare = row["occupancy_group"] == "Health care"
+        u_base = 0.30 if is_healthcare else 0.0
+        u_new = u_healthcare if is_healthcare else u_other
         _, _, scaled, _ = ew._pathogen_scaled_ecadr(
             row["eca_ls_per_person"],
             row["space_vol"],
@@ -1029,16 +1032,29 @@ def test_group_and_country_cadr_requirements(data_dir):
     assert country[ew.INDOOR_ESSENTIAL_CADR_COL].iloc[0] == pytest.approx(
         health[ew.INDOOR_ESSENTIAL_CADR_COL] + retail[ew.INDOOR_ESSENTIAL_CADR_COL]
     )
+    assert country[ew.INDOOR_ESSENTIAL_CADR_COVID_COL].iloc[0] == pytest.approx(
+        health[ew.INDOOR_ESSENTIAL_CADR_COVID_COL]
+        + retail[ew.INDOOR_ESSENTIAL_CADR_COVID_COL]
+    )
+    assert (
+        health[ew.INDOOR_ESSENTIAL_CADR_COVID_COL]
+        < health[ew.INDOOR_ESSENTIAL_CADR_COL]
+    )
     total_essential = 1_000_000.0
     expected_eca = (600_000 * scaled_health + 400_000 * scaled_retail) / total_essential
     assert country[ew.SCALED_ECA_ESSENTIAL_COL].iloc[0] == pytest.approx(expected_eca)
 
 
 def test_ashrae_scaleup_table_matches_reference():
-    """Health matches Sheet1; other groups fall with u_new masks."""
+    """Unmasked manufacturing matches Sheet1; a 0.3 mask lowers it to 158."""
     from paths import ESSENTIAL_WORKERS_DATA
 
-    got = ew.build_ashrae_scaleup_table(ESSENTIAL_WORKERS_DATA)
+    got = ew.build_ashrae_scaleup_table(
+        ESSENTIAL_WORKERS_DATA,
+        qer_ratio=5.7,
+        u_new_healthcare=0.3,
+        u_new_other=0.0,
+    )
     ref = pd.read_csv(ESSENTIAL_WORKERS_DATA / "ASHRAE Scaled Table 1 - Sheet1.csv")
     health = got.merge(ref, on="Occupational group", suffixes=("_got", "_ref"))
     health = health.loc[health["Occupational group"] == "Health"]
@@ -1048,7 +1064,17 @@ def test_ashrae_scaleup_table_matches_reference():
         )
     food = got.merge(ref, on="Occupational group", suffixes=("_got", "_ref"))
     food = food.loc[food["Occupational group"] == "Food"].iloc[0]
-    assert food["Scaled eCADR (L/s/p)_got"] < food["Scaled eCADR (L/s/p)_ref"]
+    assert food["Scaled eCADR (L/s/p)_got"] == pytest.approx(
+        food["Scaled eCADR (L/s/p)_ref"], abs=0.05
+    )
+    masked = ew.build_ashrae_scaleup_table(
+        ESSENTIAL_WORKERS_DATA,
+        qer_ratio=5.7,
+        u_new_healthcare=0.3,
+        u_new_other=0.3,
+    )
+    food_masked = masked.loc[masked["Occupational group"] == "Food"].iloc[0]
+    assert food_masked["Scaled eCADR (L/s/p)"] == 158
 
 
 def test_pathogen_scale_and_outdoor_credit():
@@ -1073,6 +1099,7 @@ def test_pathogen_scale_and_outdoor_credit():
         25, 12000, 70, 5.7, u_base=0.0, u_new=0.3
     )
     assert masked < scaled
+    assert round(masked) == 158
     assert max(0.0, scaled - 0.5 * 9.3) == pytest.approx(scaled - 4.65)
 
 

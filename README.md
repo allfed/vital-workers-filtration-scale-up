@@ -89,7 +89,7 @@ uv export --format requirements-txt --no-hashes --no-emit-project -o requirement
 ### Scale-up analysis (`data/scale_up/`)
 
 - `parameters.csv` — uncertain parameters (low, high, distribution, units, note, source)
-- `settings.csv` — fixed settings, including the width of the reported uncertainty interval, `adjust_MVA_by_cost`, and `linear_fit_PRODCOM_only`; `linear_models.py` writes its fitted values into this file
+- `settings.csv` — fixed settings, including the width of the reported uncertainty interval and `adjust_MVA_by_cost`; `linear_models.py` writes its fitted baghouse values into this file
 - `allocator_fit_data.csv` — the 40 observations behind the MVA exponent
 - `coal_plant_airflow.csv` — coal plant capacity and baghouse airflow sample
 - `BaghouseAirflow.csv` — coal operating MW per country
@@ -152,11 +152,11 @@ python scripts/visualization/plot_group_composition.py
 python scripts/visualization/plot_filtration_coverage.py
 ```
 
-`linear_models.py` writes `baghouse_gradient`, `baghouse_intercept_l_per_s` and
-`mva_exponent_b` straight into `data/scale_up/settings.csv`, each with the R² and
-sample size it came from, so there is nothing to copy by hand. Set
-`linear_fit_PRODCOM_only` to `1` to fit `b` on PRODCOM sold production only.
-Its plots go to `results/linear_models/`.
+`linear_models.py` writes `baghouse_gradient` and `baghouse_intercept_l_per_s`
+into `data/scale_up/settings.csv`, each with the R² and sample size it came
+from. It writes the MVA exponent `b` into `data/scale_up/parameters.csv` as a
+normal distribution whose 90% bounds are the pooled slope and the PRODCOM
+slope. Its plots go to `results/linear_models/`.
 
 Both model scripts refuse to run on incomplete inputs: `linear_models.py` stops
 while `coal_plant_airflow.csv` is empty, and `scale_up_model.py` stops while any

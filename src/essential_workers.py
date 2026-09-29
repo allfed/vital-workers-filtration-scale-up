@@ -1283,13 +1283,27 @@ def compute_absolute_counts(
 SCALED_ECA_COL = "Scaled ECA (L/s/person)"
 INDOOR_ESSENTIAL_CADR_COL = "Indoor Essential CADR Requirement (L/s)"
 INDOOR_VITAL_CADR_COL = "Indoor Vital CADR Requirement (L/s)"
+INDOOR_ESSENTIAL_CADR_COVID_COL = "Indoor Essential CADR Requirement COVID (L/s)"
+INDOOR_VITAL_CADR_COVID_COL = "Indoor Vital CADR Requirement COVID (L/s)"
 SCALED_ECA_ESSENTIAL_COL = "Scaled ECA Essential (L/s/person)"
 SCALED_ECA_VITAL_COL = "Scaled ECA Vital (L/s/person)"
+# Unlabeled CADR columns use ashrae_scale_factor and u_new_* from settings.csv
+# (measles-like when those match the paper). COVID columns use QER 1 with
+# other spaces unmasked; healthcare still uses u_new_healthcare from settings.
+COVID_QER_RATIO = 1.0
+COVID_U_OTHER = 0.0
+# ASHRAE-241 Table 1 baseline mask efficiency in healthcare (u_base), not u_new.
+ASHRAE_HEALTHCARE_MASK = 0.30
+_COVID_CADR_COLUMNS = (
+    INDOOR_ESSENTIAL_CADR_COVID_COL,
+    INDOOR_VITAL_CADR_COVID_COL,
+)
 _CADR_BACKFILL_COLUMNS = (
     SCALED_ECA_ESSENTIAL_COL,
     SCALED_ECA_VITAL_COL,
     INDOOR_ESSENTIAL_CADR_COL,
     INDOOR_VITAL_CADR_COL,
+    *_COVID_CADR_COLUMNS,
 )
 
 # Surface deposition γ ~ U(0.42, 0.61) h⁻¹; biological decay λ ~ lognormal
@@ -1310,6 +1324,48 @@ def _pathogen_scaled_ecadr(
     k = qer + (qer - 1.0) * _GAMMA_PLUS_LAMBDA / eACH
     vol = float(space_vol) / float(max_occupants)
     return eACH, k, float(ecadr) * k, vol
+
+
+def net_ecadr_by_group(
+    mapped,
+    qer_ratio,
+    u_new_healthcare,
+    u_new_other,
+    existing_airflow_weight,
+):
+    """Per-person eCADR after pathogen scaling, masks, and outdoor-air credit.
+
+    Arguments:
+        mapped (DataFrame): Occupational groups joined to ASHRAE occupancy rows.
+        qer_ratio (float): Wells–Riley QER ratio.
+        u_new_healthcare (float): Mask efficiency for healthcare.
+        u_new_other (float): Mask efficiency for other spaces.
+        existing_airflow_weight (float): Share of baseline outdoor airflow
+            credited against the scaled requirement.
+
+    Returns:
+        dict: Occupational group to net eCADR (L/s per person).
+    """
+    net = {}
+    for _, row in mapped.iterrows():
+        is_healthcare = row["occupancy_group"] == "Health care"
+        u_base = ASHRAE_HEALTHCARE_MASK if is_healthcare else 0.0
+        u_new = u_new_healthcare if is_healthcare else u_new_other
+        _, _, scaled, _ = _pathogen_scaled_ecadr(
+            row["eca_ls_per_person"],
+            row["space_vol"],
+            row["max_occupants"],
+            qer_ratio,
+            u_base=u_base,
+            u_new=u_new,
+        )
+        net[row["occupational_group"]] = max(
+            0.0,
+            scaled
+            - existing_airflow_weight
+            * float(row["baseline_outdoor_airflow_ls_per_person"]),
+        )
+    return net
 
 
 def _ashrae_mapped_groups(data_dir: Path) -> pd.DataFrame:
@@ -1336,18 +1392,37 @@ def _ashrae_mapped_groups(data_dir: Path) -> pd.DataFrame:
 def build_ashrae_scaleup_table(
     data_dir: Path,
     qer_ratio: Optional[float] = None,
-    u_new: Optional[float] = None,
+    u_new_healthcare: Optional[float] = None,
+    u_new_other: Optional[float] = None,
 ) -> pd.DataFrame:
-    """Pathogen-scaled eCADR by occupational group (no outdoor credit)."""
+    """Pathogen-scaled eCADR by occupational group (no outdoor credit).
+
+    Healthcare is scaled with ``u_new_healthcare``. Every other space is
+    scaled with ``u_new_other``. Both default from ``settings.csv``.
+
+    Arguments:
+        data_dir (Path): Essential-worker data directory.
+        qer_ratio (float or None): Wells–Riley QER ratio. Defaults to
+            ``ashrae_scale_factor``.
+        u_new_healthcare (float or None): Mask efficiency for healthcare.
+        u_new_other (float or None): Mask efficiency for other spaces.
+
+    Returns:
+        DataFrame: One row per occupational group.
+    """
     settings = pd.read_csv(SCALE_UP_SETTINGS).set_index("setting")["value"]
     if qer_ratio is None:
         qer_ratio = float(settings["ashrae_scale_factor"])
-    if u_new is None:
-        u_new = float(settings["u_new"])
+    if u_new_healthcare is None:
+        u_new_healthcare = float(settings["u_new_healthcare"])
+    if u_new_other is None:
+        u_new_other = float(settings["u_new_other"])
     order = {g: i for i, g in enumerate(GROUP_OVERLAP)}
     rows = []
     for _, row in _ashrae_mapped_groups(data_dir).iterrows():
-        u_base = 0.30 if row["occupancy_group"] == "Health care" else 0.0
+        is_healthcare = row["occupancy_group"] == "Health care"
+        u_base = ASHRAE_HEALTHCARE_MASK if is_healthcare else 0.0
+        u_new = u_new_healthcare if is_healthcare else u_new_other
         eACH, k, scaled, vol = _pathogen_scaled_ecadr(
             row["eca_ls_per_person"],
             row["space_vol"],
@@ -1381,7 +1456,8 @@ def compute_group_workers_and_cadr(
     overlaps_by_country: Dict[str, Dict[str, float]],
     *,
     qer_ratio: Optional[float] = None,
-    u_new: Optional[float] = None,
+    u_new_healthcare: Optional[float] = None,
+    u_new_other: Optional[float] = None,
     existing_airflow_weight: float = 0.5,
     lf_col: str = "Labour Force (2024)",
 ) -> pd.DataFrame:
@@ -1389,31 +1465,48 @@ def compute_group_workers_and_cadr(
 
     Per-person eCADR is pathogen-scaled (§2.2, with mask adjustment) then
     reduced by ``existing_airflow_weight`` × baseline outdoor airflow.
-    ``qer_ratio`` / ``u_new`` default from settings.csv.
+    Healthcare uses ``u_new_healthcare``; other spaces use ``u_new_other``.
+    ``qer_ratio`` and both mask settings default from settings.csv. Each row
+    also carries a COVID companion (QER 1, other spaces unmasked).
+
+    Arguments:
+        data_dir (Path): Essential-worker data directory.
+        lf_df (DataFrame): Labour-force table with country names.
+        employment_by_iso (dict): ILO employment by country and ISCO code.
+        weights_template (DataFrame): ISCO L2 weights before group overlaps.
+        overlaps_by_country (dict): Calibrated group overlaps by country.
+        qer_ratio (float or None): Wells–Riley QER ratio.
+        u_new_healthcare (float or None): Mask efficiency for healthcare.
+        u_new_other (float or None): Mask efficiency for other spaces.
+        existing_airflow_weight (float): Share of baseline outdoor airflow
+            credited against the scaled requirement.
+        lf_col (str): Labour-force column.
+
+    Returns:
+        DataFrame: One row per country and occupational group.
     """
     settings = pd.read_csv(SCALE_UP_SETTINGS).set_index("setting")["value"]
     if qer_ratio is None:
         qer_ratio = float(settings["ashrae_scale_factor"])
-    if u_new is None:
-        u_new = float(settings["u_new"])
+    if u_new_healthcare is None:
+        u_new_healthcare = float(settings["u_new_healthcare"])
+    if u_new_other is None:
+        u_new_other = float(settings["u_new_other"])
     mapped = _ashrae_mapped_groups(data_dir)
-    net_by_group = {}
-    for _, row in mapped.iterrows():
-        u_base = 0.30 if row["occupancy_group"] == "Health care" else 0.0
-        _, _, scaled, _ = _pathogen_scaled_ecadr(
-            row["eca_ls_per_person"],
-            row["space_vol"],
-            row["max_occupants"],
-            qer_ratio,
-            u_base=u_base,
-            u_new=u_new,
-        )
-        net_by_group[row["occupational_group"]] = max(
-            0.0,
-            scaled
-            - existing_airflow_weight
-            * float(row["baseline_outdoor_airflow_ls_per_person"]),
-        )
+    net_by_group = net_ecadr_by_group(
+        mapped,
+        qer_ratio,
+        u_new_healthcare,
+        u_new_other,
+        existing_airflow_weight,
+    )
+    covid_net = net_ecadr_by_group(
+        mapped,
+        COVID_QER_RATIO,
+        u_new_healthcare,
+        COVID_U_OTHER,
+        existing_airflow_weight,
+    )
 
     group_meta = mapped.set_index("occupational_group")
     rows: list[dict[str, Any]] = []
@@ -1502,6 +1595,7 @@ def compute_group_workers_and_cadr(
         for group in GROUP_OVERLAP:
             meta = group_meta.loc[group]
             scaled_eca = net_by_group[group]
+            covid_eca = covid_net[group]
             scale = float(lf) / tot
             indoor_essential = group_iew[group] * scale
             indoor_vital = group_ivw[group] * scale
@@ -1522,6 +1616,8 @@ def compute_group_workers_and_cadr(
                     SCALED_ECA_COL: scaled_eca,
                     INDOOR_ESSENTIAL_CADR_COL: indoor_essential * scaled_eca,
                     INDOOR_VITAL_CADR_COL: indoor_vital * scaled_eca,
+                    INDOOR_ESSENTIAL_CADR_COVID_COL: indoor_essential * covid_eca,
+                    INDOOR_VITAL_CADR_COVID_COL: indoor_vital * covid_eca,
                 }
             )
 
@@ -1607,11 +1703,14 @@ def attach_country_cadr_from_groups(
             df[col] = np.nan
         return df
 
+    sum_cols = [
+        INDOOR_ESSENTIAL_CADR_COL,
+        INDOOR_VITAL_CADR_COL,
+        *_COVID_CADR_COLUMNS,
+    ]
+    present = [col for col in sum_cols if col in group_df.columns]
     agg = group_df.groupby("Country Code", as_index=False).agg(
-        {
-            INDOOR_ESSENTIAL_CADR_COL: "sum",
-            INDOOR_VITAL_CADR_COL: "sum",
-        }
+        {col: "sum" for col in present}
     )
     df = df.drop(columns=list(_CADR_BACKFILL_COLUMNS), errors="ignore")
     df = df.merge(agg, on="Country Code", how="left")
@@ -2263,6 +2362,7 @@ _REGION_SUM_COLUMNS = [
     "Armed Forces (Essential)",
     INDOOR_ESSENTIAL_CADR_COL,
     INDOOR_VITAL_CADR_COL,
+    *_COVID_CADR_COLUMNS,
 ]
 
 

@@ -6,14 +6,12 @@ here so the whole calculation lives in one place:
 
   1. Coal plant capacity (MW) to baghouse airflow (L/s), from a small sample of
      plants. Used by methods equation 7.
-  2. Filtration output against manufacturing value added. By default this pools
-     country-level filtration market revenue with Eurostat PRODCOM sold
-     production. If ``linear_fit_PRODCOM_only`` is set in settings.csv, only
-     the PRODCOM points are used. The slope is the exponent b in methods
-     equation 3.
+  2. Filtration output against manufacturing value added. The scale-up samples
+     the exponent b between the PRODCOM slope and the pooled slope.
 
-Running this script writes one plot per model and updates the three fitted rows
-in data/scale_up/settings.csv, which is where the model reads them from.
+Running this script writes one plot per model, updates the baghouse rows in
+data/scale_up/settings.csv, and writes the two slopes of b into
+data/scale_up/parameters.csv.
 """
 
 import os
@@ -39,6 +37,7 @@ from viz_common import label_panel  # noqa: E402
 COAL_FILE = "data/scale_up/coal_plant_airflow.csv"
 ALLOCATOR_FILE = "data/scale_up/allocator_fit_data.csv"
 SETTINGS_FILE = "data/scale_up/settings.csv"
+PARAMETERS_FILE = "data/scale_up/parameters.csv"
 RESULTS_DIR = "results/linear_models"
 
 # Dataset labels used in the allocator input file
@@ -104,23 +103,20 @@ def plot_coal_airflow(fit, path):
     plt.close(fig)
 
 
-def fit_allocator(path=ALLOCATOR_FILE, prodcom_only=False):
+def fit_allocator(path=ALLOCATOR_FILE):
     """
     Fit filtration output against MVA.
 
-    The default pooled model shares one slope across both datasets and gives
-    each its own intercept, so the slope is not distorted by the difference
-    in levels. If ``prodcom_only`` is True, the slope used by the model comes
-    from the PRODCOM points alone; the pooled fit is still computed for the
-    diagnostic plot.
+    The pooled model shares one slope across both datasets and gives each its
+    own intercept, so the slope is not distorted by the difference in levels.
+    Single-dataset fits are kept for the diagnostic plot and as the bounds of
+    the sampled exponent b.
 
     Arguments:
         path (str): CSV with columns country, dataset, value_usd, mva_usd.
-        prodcom_only (bool): Fit b on PRODCOM only.
 
     Returns:
-        dict: Single-dataset fits, the pooled fit, the input data, and either
-            the pooled or the PRODCOM model as ``chosen``.
+        dict: Single-dataset fits, the pooled fit, and the input data.
     """
     df = pd.read_csv(path)
     df["log_y"] = np.log10(df.value_usd)
@@ -138,13 +134,7 @@ def fit_allocator(path=ALLOCATOR_FILE, prodcom_only=False):
         df.log_y.to_numpy(),
         sm.add_constant(np.column_stack([df.log_x, df.is_prodcom])),
     ).fit()
-    return {
-        "pooled": pooled,
-        "single": single,
-        "chosen": single["PRODCOM"] if prodcom_only else pooled,
-        "prodcom_only": prodcom_only,
-        "data": df,
-    }
+    return {"pooled": pooled, "single": single, "data": df}
 
 
 def plot_allocator(fit, path):
@@ -246,35 +236,21 @@ def plot_allocator(fit, path):
     plt.close(fig)
 
 
-def update_settings(coal, allocator, path=SETTINGS_FILE):
+def update_settings(coal, path=SETTINGS_FILE):
     """
-    Write the fitted values into the settings table the model reads.
+    Write the baghouse fit into the settings table the model reads.
 
-    The three fitted rows are replaced where they already sit, so
-    data/scale_up/settings.csv stays the only place the model's fixed settings
-    live and the fits cannot go stale against it.
+    The fitted rows are replaced where they already sit. The MVA exponent is
+    not a fixed setting; :func:`update_mva_exponent` writes its bounds into
+    parameters.csv. A leftover ``mva_exponent_b`` settings row is removed.
 
     Arguments:
         coal (dict): Output of fit_coal_airflow.
-        allocator (dict): Output of fit_allocator.
         path (str): Path to the settings CSV.
 
     Returns:
         pandas.DataFrame: The rows that were written.
     """
-    chosen = allocator["chosen"]
-    if allocator["prodcom_only"]:
-        b_note = (
-            f"Fitted in linear_models.py on PRODCOM only. Standard error "
-            f"{np.asarray(chosen.bse)[1]:.3f}, R2 = {chosen.rsquared:.3f}, "
-            f"n = {int(chosen.nobs)}."
-        )
-    else:
-        b_note = (
-            f"Fitted in linear_models.py. Standard error "
-            f"{np.asarray(chosen.bse)[1]:.3f}, R2 = {chosen.rsquared:.3f}, "
-            f"n = {int(chosen.nobs)}."
-        )
     rows = [
         {
             "setting": "baghouse_gradient",
@@ -292,22 +268,57 @@ def update_settings(coal, allocator, path=SETTINGS_FILE):
             "applied to countries with non-zero coal capacity.",
             "source": COAL_FILE,
         },
-        {
-            "setting": "mva_exponent_b",
-            "value": round(np.asarray(chosen.params)[1], 3),
-            "units": "exponent",
-            "note": b_note,
-            "source": ALLOCATOR_FILE,
-        },
     ]
 
     settings = pd.read_csv(path).set_index("setting")
     settings["value"] = settings["value"].astype(object)
+    if "mva_exponent_b" in settings.index:
+        settings = settings.drop(index="mva_exponent_b")
     for row in rows:
         columns = [key for key in row if key != "setting"]
         settings.loc[row["setting"], columns] = [row[key] for key in columns]
     settings.reset_index().to_csv(path, index=False)
     return pd.DataFrame(rows)
+
+
+def update_mva_exponent(allocator, path=PARAMETERS_FILE):
+    """
+    Write the PRODCOM and pooled slopes as the 90% bounds of b.
+
+    Arguments:
+        allocator (dict): Output of fit_allocator.
+        path (str): Path to the parameters CSV.
+
+    Returns:
+        pandas.Series: The parameter row that was written.
+    """
+    prodcom_model = allocator["single"]["PRODCOM"]
+    pooled_model = allocator["pooled"]
+    prodcom = round(float(np.asarray(prodcom_model.params)[1]), 3)
+    pooled = round(float(np.asarray(pooled_model.params)[1]), 3)
+    low, high = sorted([prodcom, pooled])
+    row = {
+        "parameter": "mva_exponent_b",
+        "low": low,
+        "high": high,
+        "distribution": "normal",
+        "units": "exponent",
+        "note": (
+            "90% interval bounds are the pooled slope "
+            f"({pooled}, n = {int(pooled_model.nobs)}) and the PRODCOM slope "
+            f"({prodcom}, n = {int(prodcom_model.nobs)})."
+        ),
+        "source": ALLOCATOR_FILE,
+    }
+    params = pd.read_csv(path)
+    if (params["parameter"] == "mva_exponent_b").any():
+        idx = params.index[params["parameter"] == "mva_exponent_b"][0]
+        for key, value in row.items():
+            params.loc[idx, key] = value
+    else:
+        params = pd.concat([params, pd.DataFrame([row])], ignore_index=True)
+    params.to_csv(path, index=False)
+    return pd.Series(row)
 
 
 def main():
@@ -325,16 +336,12 @@ def main():
     plot_coal_airflow(coal, os.path.join(RESULTS_DIR, "coal_airflow_fit.png"))
 
     print("\nFitting filtration output against MVA...")
-    from scale_up_model import load_settings
-
-    prodcom_only = bool(load_settings().get("linear_fit_PRODCOM_only"))
-    allocator = fit_allocator(prodcom_only=prodcom_only)
-    chosen = allocator["chosen"]
-    label = "PRODCOM-only" if prodcom_only else "pooled"
+    allocator = fit_allocator()
+    pooled = allocator["pooled"]
     print(
-        f"  {label} b = {np.asarray(chosen.params)[1]:.3f} "
-        f"(SE {np.asarray(chosen.bse)[1]:.3f}), R2 = {chosen.rsquared:.3f}, "
-        f"n = {int(chosen.nobs)}"
+        f"  pooled b = {np.asarray(pooled.params)[1]:.3f} "
+        f"(SE {np.asarray(pooled.bse)[1]:.3f}), R2 = {pooled.rsquared:.3f}, "
+        f"n = {int(pooled.nobs)}"
     )
     for name, model in allocator["single"].items():
         print(
@@ -343,11 +350,16 @@ def main():
         )
     plot_allocator(allocator, os.path.join(RESULTS_DIR, "mva_allocator_fit.png"))
 
-    fitted = update_settings(coal, allocator)
+    fitted = update_settings(coal)
+    bounds = update_mva_exponent(allocator)
     print(f"\nPlots written to {RESULTS_DIR}/")
     print(f"Fitted values written into {SETTINGS_FILE}:")
     for row in fitted.itertuples():
         print(f"  {row.setting} = {row.value}")
+    print(
+        f"MVA exponent b written into {PARAMETERS_FILE}: "
+        f"{bounds['low']} to {bounds['high']}"
+    )
 
 
 if __name__ == "__main__":

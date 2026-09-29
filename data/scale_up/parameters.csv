@@ -44,7 +44,9 @@ https://www.coherentmarketinsights.com/industry-reports/air-filtration-market
 https://www.globalgrowthinsights.com/market-reports/air-filters-market-112598"
 filter_volume_m3,0.006555,0.006555,uniform,m3/filter,Volume of a 20x20x1 filter (0.508 x 0.508 x 0.0254 m). Equation 4 divides revenue by price per m3 of media times this volume.,
 pac_panel_filter_volume_m3,0.001638,0.003203,uniform,m3/filter,Volume of a typical panel-format PAC filter (10x10x1 to 14x14x1 in). Used to convert panel PAC units to 20x20x1 filter counts when subtracting from the CR box filter pool.,
-filter_media_area_m2,0.47,0.47,uniform,m2/filter,"Media area per pleated filter, used only for the meltblown mass cap. Manufacturer datasheets cluster at 0.51 m2 (5.5 sq ft).",https://www.purolatorairfilters.com/pdfs/PuroGreen-13.pdf
+filter_media_area_m2,0.44,0.75,uniform,m2/filter,"Media area per pleated filter, used only for the meltblown mass cap. Depends on depth of pleating (1 vs 2 vs 4 inch deep). Low bound is for 1 inch 20*20, high is for 2 inch.","https://www.purolatorairfilters.com/pdfs/PuroGreen-13.pdf
+https://www.texairfilters.com/selecting-the-right-filter-to-improve-indoor-air-quality/
+"
 baghouse_efficiency,0.5,0.8,normal,fraction,"Methods 2.3.3, minimum efficiency as a function of particle size.",https://www.mdpi.com/1660-4601/16/2/247
 baghouse_utilisation,0.1,0.35,normal,fraction,Share of coal units fitted with baghouses rather than electrostatic precipitators.,"https://www.mee.gov.cn/gkml/hbb/bgth/201706/W020170623582998746402.pdf pg 12-13 translated
 https://www.nescaum.org/documents/coal-control-technology-nescaum-report-20110330.pdf
@@ -76,3 +78,4 @@ https://www.walmart.com/ip/Lasko-Products-3723-Premium-Box-Fan/16503180
 https://north40.com/lasko-3723-premium-3-speed-box-fan-20
 https://www.homedepot.com/p/Lasko-Premium-20-in-3-Speed-Box-Fan-LKO-3723/317261256
 https://www.target.com/p/impress-20-inch-3-speed-box-fan-white/-/A-91830729"
+mva_exponent_b,1.019,1.163,normal,exponent,"90% interval bounds are the pooled slope (1.019, n = 40) and the PRODCOM slope (1.163, n = 21).",data/scale_up/allocator_fit_data.csv

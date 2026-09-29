@@ -10,8 +10,10 @@ country and by supply channel, and the weekly share of the essential and vital
 workforces covered globally and by UN region.
 
 All uncertain parameters are read from data/parameters.csv and all fixed
-settings from data/settings.csv, so no numbers are hard-coded here. The two
-fitted linear models (coal airflow, MVA exponent) come from linear_models.py.
+settings from data/settings.csv, so no numbers are hard-coded here. The coal
+airflow fit comes from linear_models.py. The MVA exponent is sampled between
+the PRODCOM and pooled slopes, which linear_models.py writes into
+parameters.csv.
 
 All three scale-up scenarios are run and written out on every execution.
 """
@@ -23,7 +25,13 @@ import pandas as pd
 import requests
 import country_converter as coco
 
-from essential_workers import backfill_neighbours
+from essential_workers import (
+    INDOOR_ESSENTIAL_CADR_COL,
+    INDOOR_ESSENTIAL_CADR_COVID_COL,
+    INDOOR_VITAL_CADR_COL,
+    INDOOR_VITAL_CADR_COVID_COL,
+    backfill_neighbours,
+)
 from mc_distributions import sample_normal, sample_lognormal, sample_uniform
 
 # Input and output locations
@@ -287,8 +295,10 @@ def load_country_data(adjust_mva_by_cost=False):
             "region",
             "%Essential Workers",
             "%Vital Workers",
-            "Indoor Essential CADR Requirement (L/s)",
-            "Indoor Vital CADR Requirement (L/s)",
+            INDOOR_ESSENTIAL_CADR_COL,
+            INDOOR_VITAL_CADR_COL,
+            INDOOR_ESSENTIAL_CADR_COVID_COL,
+            INDOOR_VITAL_CADR_COVID_COL,
         ]
     ].copy()
     df = df.merge(mva[["iso3", "mva_usd", "mva_year"]], on="iso3", how="left")
@@ -317,30 +327,54 @@ def production_shares(df, exponent, min_production, total_filters):
 
     Implements methods equation 3. Countries whose implied total filter output
     falls below the minimum are set to zero and their share is redistributed
-    across the countries above it.
+    across the countries above it. An exponent array, one value per draw,
+    returns one share row per draw.
 
     Arguments:
         df (pandas.DataFrame): Country table with an mva_usd column.
-        exponent (float): The exponent b.
+        exponent (float or array): The exponent b. An array is one value per draw.
         min_production (float): Minimum national total filter production.
-        total_filters (float): Global total filter production, used to test the
-            threshold.
+        total_filters (float or array): Global total filter production, used to
+            test the threshold. An array is one total per draw.
 
     Returns:
-        numpy.ndarray: Shares summing to one, shape (n_countries,).
+        numpy.ndarray: Shares summing to one. Shape (n_countries,) for a scalar
+        exponent, or (n_draws, n_countries) for an array.
     """
     has_mva = df.mva_usd.to_numpy(float) > 0
-    weights = np.where(has_mva, df.mva_usd.to_numpy(float) ** exponent, 0.0)
-    shares = weights / weights.sum()
-
-    below = has_mva & (shares * total_filters < min_production)
-    shares = np.where(below, 0.0, shares)
+    mva = df.mva_usd.to_numpy(float)
+    exponent = np.asarray(exponent, dtype=float)
+    totals = np.asarray(total_filters, dtype=float)
     print(f"  {has_mva.sum()} countries with MVA, {(~has_mva).sum()} without")
+
+    if exponent.ndim == 0:
+        weights = np.where(has_mva, mva ** float(exponent), 0.0)
+        shares = weights / weights.sum()
+        total = float(totals) if totals.ndim == 0 else float(totals.mean())
+        below = has_mva & (shares * total < min_production)
+        shares = np.where(below, 0.0, shares)
+        print(
+            f"  {below.sum()} of {has_mva.sum()} fall below the "
+            f"{min_production:,.0f} unit threshold "
+            f"({1 - shares.sum():.2%} of production reallocated)"
+        )
+        return shares / shares.sum()
+
+    if totals.ndim == 0:
+        totals = np.full(exponent.shape[0], float(totals))
+    weights = np.where(has_mva, mva[None, :] ** exponent[:, None], 0.0)
+    shares = weights / weights.sum(axis=1, keepdims=True)
+    below = has_mva & (shares * totals[:, None] < min_production)
+    shares = np.where(below, 0.0, shares)
+    reallocated = 1.0 - shares.sum(axis=1)
+    row_sum = shares.sum(axis=1, keepdims=True)
+    shares = np.divide(shares, row_sum, out=np.zeros_like(shares), where=row_sum > 0)
     print(
-        f"  {below.sum()} of {has_mva.sum()} fall below the {min_production:,.0f} "
-        f"unit threshold ({1 - shares.sum():.2%} of production reallocated)"
+        f"  {np.median(below.sum(axis=1)):.0f} of {has_mva.sum()} fall below the "
+        f"{min_production:,.0f} unit threshold at the median draw "
+        f"({np.median(reallocated):.2%} of production reallocated)"
     )
-    return shares / shares.sum()
+    return shares
 
 
 def pac_panel_filter_units(samples):
@@ -759,14 +793,17 @@ def build_streams(
     )
     print(f"  CR box production is limited by {limiting}")
 
-    pac_country = pac_global[:, None] * shares[None, :]
-    cr_country = cr_global[:, None] * shares[None, :]
+    share_rows = np.asarray(shares, float)
+    if share_rows.ndim == 1:
+        share_rows = share_rows[None, :]
+    pac_country = pac_global[:, None] * share_rows
+    cr_country = cr_global[:, None] * share_rows
 
     # Equation 10 repurposes only non-residential panel filters
     non_residential_ecadr, _, _ = cr_box_ecadr_global(
         samples, settings, total_revenue * samples["fraction_non_residential"]
     )
-    non_residential_country = non_residential_ecadr[:, None] * shares[None, :]
+    non_residential_country = non_residential_ecadr[:, None] * share_rows
 
     multiplier = scenario_multiplier(samples, settings, n, baseline_filters, scenario)
 
@@ -808,10 +845,10 @@ def build_streams(
         samples, settings, n, baseline_filters, scenario, apply_cap=False
     )
     streams["baghouse"] = manufacturing_timeline(
-        bag_annual[:, None] * shares[None, :], uncapped, settings
+        bag_annual[:, None] * share_rows, uncapped, settings
     )
     streams["repurposed_baghouse"] = one_off_timeline(
-        bag_repurposed[:, None] * shares[None, :],
+        bag_repurposed[:, None] * share_rows,
         settings,
         delay,
         settings["baghouse_release_weeks"],
@@ -830,13 +867,16 @@ def write_requirements(df, results_dir=RESULTS_DIR):
         df (pandas.DataFrame): Country table.
         results_dir (str): Directory for the output CSV.
     """
-    columns = [
-        "Indoor Vital CADR Requirement (L/s)",
-        "Indoor Essential CADR Requirement (L/s)",
+    column_names = [
+        (INDOOR_VITAL_CADR_COL, "indoor_vital_ecadr_l_per_s"),
+        (INDOOR_ESSENTIAL_CADR_COL, "indoor_essential_ecadr_l_per_s"),
+        (INDOOR_VITAL_CADR_COVID_COL, "indoor_vital_ecadr_covid_l_per_s"),
+        (INDOOR_ESSENTIAL_CADR_COVID_COL, "indoor_essential_ecadr_covid_l_per_s"),
     ]
-    totals = df.groupby("region")[columns].sum()
+    present = [(src, dest) for src, dest in column_names if src in df.columns]
+    totals = df.groupby("region")[[src for src, _ in present]].sum()
     totals.loc["Global"] = totals.sum()
-    totals.columns = ["indoor_vital_ecadr_l_per_s", "indoor_essential_ecadr_l_per_s"]
+    totals.columns = [dest for _, dest in present]
     totals.index.name = "region"
     totals.to_csv(os.path.join(results_dir, "requirements_by_region.csv"))
 
@@ -872,24 +912,34 @@ def write_results(df, streams, settings, scenario, results_dir=RESULTS_DIR):
         index=pd.Index(range(1, weeks + 1), name="week"),
     ).to_csv(os.path.join(results_dir, f"ecadr_by_channel_{suffix}.csv"))
 
-    for label, column in [
-        ("vital", "Indoor Vital CADR Requirement (L/s)"),
-        ("essential", "Indoor Essential CADR Requirement (L/s)"),
+    # Settings-based columns are the measles-like case. COVID is the companion.
+    for pathogen, label, column in [
+        ("measles", "vital", INDOOR_VITAL_CADR_COL),
+        ("measles", "essential", INDOOR_ESSENTIAL_CADR_COL),
+        ("covid", "vital", INDOOR_VITAL_CADR_COVID_COL),
+        ("covid", "essential", INDOOR_ESSENTIAL_CADR_COVID_COL),
     ]:
+        if column not in df.columns:
+            continue
         result = coverage(
             total,
             df[column].to_numpy(float),
             df,
             settings["uncertainty_interval"],
         )
-        result.to_csv(
-            os.path.join(results_dir, f"coverage_{label}_{suffix}.csv"), index=False
+        # Measles keeps the unlabeled filename so existing manuscript plots
+        # keep reading the settings-based (measles) coverage.
+        name = (
+            f"coverage_{label}_{suffix}.csv"
+            if pathogen == "measles"
+            else f"coverage_{label}_{pathogen}_{suffix}.csv"
         )
+        result.to_csv(os.path.join(results_dir, name), index=False)
         global_rows = result[result.region == "Global"].set_index("week")
         for week in REPORT_WEEKS:
             print(
-                f"    {label} workers covered globally at week {week:>2}: "
-                f"{global_rows.loc[week, 'coverage_median']:.1%}"
+                f"    {pathogen} {label} workers covered globally at week "
+                f"{week:>2}: {global_rows.loc[week, 'coverage_median']:.1%}"
             )
 
 
@@ -942,9 +992,9 @@ def main():
     print(f"  total panel filter production: {np.median(total_filters):,.0f} per year")
     shares = production_shares(
         df,
-        settings["mva_exponent_b"],
+        samples["mva_exponent_b"],
         settings["min_country_filter_production"],
-        total_filters.mean(),
+        total_filters,
     )
 
     os.makedirs(RESULTS_DIR, exist_ok=True)

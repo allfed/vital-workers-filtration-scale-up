@@ -213,7 +213,6 @@ def test_real_settings_cover_everything_the_model_reads():
         "baghouse_release_weeks",
         "baghouse_gradient",
         "baghouse_intercept_l_per_s",
-        "mva_exponent_b",
         "min_country_filter_production",
         "filters_per_cr_box",
         "pc_fans_per_cr_box",
@@ -222,7 +221,8 @@ def test_real_settings_cover_everything_the_model_reads():
         "adjust_MVA_by_cost",
         "IndoorContextMethod",
         "ashrae_scale_factor",
-        "u_new",
+        "u_new_healthcare",
+        "u_new_other",
     ]
     missing = [name for name in required if name not in settings]
     assert not missing, f"settings.csv is missing: {missing}"
@@ -320,6 +320,21 @@ def test_production_shares_apply_the_exponent():
     df = _country_table([10.0, 100.0])
     shares = sm.production_shares(df, exponent=2.0, min_production=0, total_filters=1e9)
     np.testing.assert_allclose(shares, [100 / 10100, 10000 / 10100])
+
+
+def test_production_shares_one_row_per_draw():
+    """An exponent per draw returns a share row per draw, each summing to one."""
+    df = _country_table([10.0, 100.0])
+    shares = sm.production_shares(
+        df,
+        exponent=np.array([1.0, 2.0]),
+        min_production=0,
+        total_filters=np.array([1e9, 1e9]),
+    )
+    assert shares.shape == (2, 2)
+    np.testing.assert_allclose(shares.sum(axis=1), [1.0, 1.0])
+    np.testing.assert_allclose(shares[0], [10 / 110, 100 / 110])
+    np.testing.assert_allclose(shares[1], [100 / 10100, 10000 / 10100])
 
 
 # ---------------------------------------------------------------------------
@@ -805,12 +820,10 @@ def test_real_coal_sample_is_either_empty_or_fittable():
 
 
 def test_fit_allocator_reproduces_the_mva_exponent():
-    """The pooled slope is the exponent b the model allocates production with."""
+    """The pooled slope is one of the two bounds the model samples b between."""
     fit = lm.fit_allocator(str(REAL_ALLOCATOR))
-    assert fit["prodcom_only"] is False
     pooled = fit["pooled"]
     slope = np.asarray(pooled.params)[1]
-    assert fit["chosen"] is pooled
     assert int(pooled.nobs) == 40
     assert slope == pytest.approx(1.019, abs=0.001)
     assert pooled.rsquared > 0.85
@@ -818,26 +831,16 @@ def test_fit_allocator_reproduces_the_mva_exponent():
     assert abs(slope - 1) < 2 * np.asarray(pooled.bse)[1]
 
 
-def test_fit_allocator_prodcom_only_uses_prodcom_as_chosen():
-    """With the flag on, b comes from the PRODCOM points alone."""
-    fit = lm.fit_allocator(str(REAL_ALLOCATOR), prodcom_only=True)
-    assert fit["pooled"] is not None
-    assert fit["prodcom_only"] is True
-    assert fit["chosen"] is fit["single"]["PRODCOM"]
-    slope = np.asarray(fit["chosen"].params)[1]
-    assert slope == pytest.approx(np.asarray(fit["single"]["PRODCOM"].params)[1])
-    assert int(fit["chosen"].nobs) < 40
-
-
-def test_settings_mva_exponent_matches_the_fit():
-    """settings.csv must carry the exponent that linear_models.py fits."""
-    settings = sm.load_settings(REAL_SETTINGS)
-    fit = lm.fit_allocator(
-        str(REAL_ALLOCATOR),
-        prodcom_only=bool(settings.get("linear_fit_PRODCOM_only")),
-    )
-    fitted = round(np.asarray(fit["chosen"].params)[1], 3)
-    assert settings["mva_exponent_b"] == pytest.approx(fitted)
+def test_parameters_mva_exponent_bounds_match_the_fits():
+    """parameters.csv bounds b with the pooled and PRODCOM slopes."""
+    params = sm.load_parameters()
+    fit = lm.fit_allocator(str(REAL_ALLOCATOR))
+    prodcom = round(float(np.asarray(fit["single"]["PRODCOM"].params)[1]), 3)
+    pooled = round(float(np.asarray(fit["pooled"].params)[1]), 3)
+    row = params.loc["mva_exponent_b"]
+    assert row["distribution"] == "normal"
+    assert float(row["low"]) == pytest.approx(min(prodcom, pooled))
+    assert float(row["high"]) == pytest.approx(max(prodcom, pooled))
 
 
 def test_update_settings_rewrites_only_the_fitted_rows(tmp_path):
@@ -847,26 +850,25 @@ def test_update_settings_rewrites_only_the_fitted_rows(tmp_path):
     original.to_csv(path, index=False)
 
     coal = {"slope": 1500.0, "intercept": 40000.0, "r_squared": 0.9, "n": 11}
-    allocator = lm.fit_allocator(str(REAL_ALLOCATOR))
-    written = lm.update_settings(coal, allocator, str(path))
+    written = lm.update_settings(coal, str(path))
 
     updated = sm.load_settings(str(path))
     assert updated["baghouse_gradient"] == pytest.approx(1500.0)
     assert updated["baghouse_intercept_l_per_s"] == pytest.approx(40000.0)
-    assert updated["mva_exponent_b"] == pytest.approx(1.019, abs=0.001)
+    assert "mva_exponent_b" not in updated
     assert list(written.setting) == [
         "baghouse_gradient",
         "baghouse_intercept_l_per_s",
-        "mva_exponent_b",
     ]
 
-    # Row order is kept, and settings the fits do not touch are unchanged
+    # Row order of untouched settings is kept, and the fixed exponent is gone
     after = pd.read_csv(path)
-    assert list(after.setting) == list(original.setting)
-    untouched = ~after.setting.isin(written.setting)
+    assert "mva_exponent_b" not in set(after.setting)
+    untouched = ~original.setting.isin(list(written.setting) + ["mva_exponent_b"])
     pd.testing.assert_frame_equal(
-        after[untouched].reset_index(drop=True),
-        original[untouched.to_numpy()].reset_index(drop=True),
+        after[after.setting.isin(original.loc[untouched, "setting"])]
+        .reset_index(drop=True),
+        original[untouched].reset_index(drop=True),
     )
 
 
@@ -875,25 +877,28 @@ def test_update_settings_records_the_provenance_of_each_fit(tmp_path):
     path = tmp_path / "settings.csv"
     pd.read_csv(REAL_SETTINGS).to_csv(path, index=False)
     coal = {"slope": 1500.0, "intercept": 40000.0, "r_squared": 0.9, "n": 11}
-    lm.update_settings(coal, lm.fit_allocator(str(REAL_ALLOCATOR)), str(path))
+    lm.update_settings(coal, str(path))
 
     rows = pd.read_csv(path).set_index("setting")
     assert "n = 11" in rows.loc["baghouse_gradient", "note"]
     assert rows.loc["baghouse_gradient", "source"] == lm.COAL_FILE
-    assert "n = 40" in rows.loc["mva_exponent_b", "note"]
-    assert rows.loc["mva_exponent_b", "source"] == lm.ALLOCATOR_FILE
 
 
-def test_update_settings_writes_the_prodcom_slope_when_asked(tmp_path):
-    """PRODCOM-only fits record that provenance and a different b."""
-    path = tmp_path / "settings.csv"
-    pd.read_csv(REAL_SETTINGS).to_csv(path, index=False)
-    coal = {"slope": 1500.0, "intercept": 40000.0, "r_squared": 0.9, "n": 11}
-    fit = lm.fit_allocator(str(REAL_ALLOCATOR), prodcom_only=True)
-    lm.update_settings(coal, fit, str(path))
+def test_update_mva_exponent_writes_both_slopes(tmp_path):
+    """The parameter bounds are the pooled and PRODCOM slopes, either way up."""
+    path = tmp_path / "parameters.csv"
+    pd.DataFrame(
+        [{"parameter": "other", "low": 1, "high": 2, "distribution": "normal"}]
+    ).to_csv(path, index=False)
+    fit = lm.fit_allocator(str(REAL_ALLOCATOR))
+    written = lm.update_mva_exponent(fit, str(path))
 
-    rows = pd.read_csv(path).set_index("setting")
-    expected = round(np.asarray(fit["chosen"].params)[1], 3)
-    assert float(rows.loc["mva_exponent_b", "value"]) == pytest.approx(expected)
-    assert "PRODCOM only" in rows.loc["mva_exponent_b", "note"]
-    assert int(fit["chosen"].nobs) != 40
+    prodcom = round(float(np.asarray(fit["single"]["PRODCOM"].params)[1]), 3)
+    pooled = round(float(np.asarray(fit["pooled"].params)[1]), 3)
+    assert written["low"] == pytest.approx(min(prodcom, pooled))
+    assert written["high"] == pytest.approx(max(prodcom, pooled))
+    assert "n = 40" in written["note"]
+    assert "n = 21" in written["note"]
+    assert written["source"] == lm.ALLOCATOR_FILE
+    params = pd.read_csv(path)
+    assert list(params.parameter) == ["other", "mva_exponent_b"]
