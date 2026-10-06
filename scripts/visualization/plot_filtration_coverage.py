@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """Manuscript figures for the filtration scale-up (ALLFED style).
 
-Reads the scenario results written by ``src/scale_up_model.py`` and produces:
-  - global coverage over time under all three scenarios, with uncertainty
-  - the same coverage broken down by supply channel
-  - a two-panel map of coverage by UN region at a chosen week
-  - a two-panel map of regional essential-requirement coverage, COVID above
-    and measles below
-  - global supply scenarios for a COVID-like pathogen above and measles below
-  - scenario 2 measles coverage for a range of mask efficiencies
-  - separate maps for indoor vital and indoor essential coverage
-
-Coverage is expressed as a share of the indoor vital worker requirement. The
-indoor essential requirement is larger, so full essential coverage sits above
-100 percent on that scale.
+Reads the scenario results written by ``src/filtration_scale_up_model.py`` and
+produces:
+  - global supply scenarios for a COVID-like pathogen and a measles-like pathogen
+  - global measles eCADR supply against the requirement at each mask efficiency
+  - global coverage broken down by supply channel, PACs or CR boxes prioritized
+  - regional eCADR supply and indoor vital coverage, at six months
+  - regional indoor vital and essential coverage, at six months
 """
 
 from __future__ import annotations
@@ -22,23 +16,25 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 import pandas as pd
 
 from viz_common import (
     ESSENTIAL_WORKERS_RESULTS,
-    CR_BOXES_PRIORITIZED_RESULTS,
-    PACS_PRIORITIZED_RESULTS,
-    SAVE_DPI,
-    VISUALIZATIONS_RESULTS,
     add_horizontal_colorbar,
     apply_allfed_style,
     draw_world_choropleth,
     expand_regions_to_countries,
     label_panel,
+    save_figure,
 )
-import essential_workers as ew  # noqa: E402
-from paths import ESSENTIAL_WORKERS_DATA, SCALE_UP_SETTINGS  # noqa: E402
+import ecadr_requirements as ecadr  # noqa: E402
+from processing.paths import (  # noqa: E402
+    CR_BOXES_PRIORITIZED_RESULTS,
+    ESSENTIAL_WORKERS_PARAMETERS,
+    FILTRATION_SCALE_UP_VISUALIZATIONS,
+    PACS_PRIORITIZED_RESULTS,
+    read_parameters,
+)
 
 # cmasher colormap names; change these to try other palettes from the library.
 # CMAP_RANGE drops the black tip of arctic_r so the highest values stay navy.
@@ -51,7 +47,7 @@ REGION_COVERAGE_ALPHA = 0.8
 # Constrained layout's default is 0.02; raise this to pull the panels apart.
 PANEL_HSPACE = 0.10
 LEGEND_FRAMEON = False
-# Panel-letter position for ScenarioCoverage_Manuscript_two_panel (axes coordinates).
+# Panel-letter position on the stacked scenario panels (axes coordinates).
 SCENARIO_COVERAGE_PANEL_LABEL_XY = (-0.08, 1.129)
 
 # Supply channels, in stacking order, with manuscript labels
@@ -128,7 +124,7 @@ def load_regional_ecadr(scenario: int, week: int) -> pd.DataFrame:
         PACS_PRIORITIZED_RESULTS / f"weekly_ecadr_by_country_scenario{scenario}.csv",
         index_col=0,
     ).reset_index(names="Country Name")
-    regions = pd.read_csv(ESSENTIAL_WORKERS_RESULTS / "EssentialWorkersByCountry.csv")[
+    regions = pd.read_csv(ESSENTIAL_WORKERS_RESULTS / "essential_workers_by_country.csv")[
         ["Country Name", "Region"]
     ]
     merged = weekly.merge(regions, on="Country Name")
@@ -154,49 +150,34 @@ def load_requirements() -> pd.DataFrame:
     )
 
 
-def essential_requirement_level(requirements: pd.DataFrame) -> float:
+def when_label(week: int) -> str:
     """
-    Global indoor essential requirement, as a percentage of the vital one.
+    Plain-language time for a figure title.
 
     Arguments:
-        requirements (pandas.DataFrame): Output of load_requirements.
+        week (int): Weeks since the start of the pandemic.
 
     Returns:
-        float: Percentage, above 100 because the essential workforce is wider.
+        str: "after 3 months" for week 13, "after 6 months" for week 26, and
+            "at week N" otherwise.
     """
-    return 100.0 * (
-        requirements.loc["Global", "indoor_essential_ecadr_l_per_s"]
-        / requirements.loc["Global", "indoor_vital_ecadr_l_per_s"]
-    )
-
-
-def _save_figure(fig: plt.Figure, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=SAVE_DPI, bbox_inches="tight")
-    plt.close(fig)
+    if week % 13 == 0:
+        return f"after {week // 13 * 3} months"
+    return f"at week {week}"
 
 
 def _draw_scenario_coverage_ax(
-    ax,
-    by_scenario,
-    essential_level,
-    last_week,
-    title=None,
-    ylim=None,
-    show_legend=True,
-    show_xlabel=True,
+    ax, by_scenario, essential_level, last_week, title, show_xlabel
 ):
     """
-    Draw global scenario coverage on one axes.
+    Draw global scenario coverage on one axes, up to full essential coverage.
 
     Arguments:
         ax (matplotlib.axes.Axes): Axes to draw on.
         by_scenario (dict): Global vital coverage by scenario.
         essential_level (float): Essential requirement as % of vital.
         last_week (int): Last week on the x-axis.
-        title (str or None): Axes title.
-        ylim (tuple or None): y-axis limits, or None for autoscale.
-        show_legend (bool): Whether to draw the legend.
+        title (str): Axes title.
         show_xlabel (bool): Whether to draw the x-axis label.
     """
     for scenario, label in SCENARIO_LABELS.items():
@@ -227,8 +208,7 @@ def _draw_scenario_coverage_ax(
     )
 
     ax.set_xlim(1, last_week)
-    if ylim is not None:
-        ax.set_ylim(*ylim)
+    ax.set_ylim(0, essential_level)
     if show_xlabel:
         ax.set_xlabel("Weeks since the start of the pandemic")
     ax.set_ylabel("% of indoor vital worker requirement")
@@ -241,120 +221,7 @@ def _draw_scenario_coverage_ax(
         ),
     )
     right.set_ylabel("% of indoor essential worker requirement")
-    if title:
-        ax.set_title(title, fontweight="bold")
-    if show_legend:
-        ax.legend(
-            fontsize=9,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.12),
-            ncol=2,
-            frameon=LEGEND_FRAMEON,
-            framealpha=0.9,
-        )
-
-
-def plot_scenario_coverage(output_path: Path) -> None:
-    """
-    Global coverage over time under all three scenarios.
-
-    Each scenario gets its median and uncertainty interval. The band at the top
-    marks the range between fully covering indoor vital workers and fully
-    covering the wider indoor essential workforce.
-
-    Arguments:
-        output_path (Path): PNG to write.
-    """
-    requirements = load_requirements()
-    essential_level = essential_requirement_level(requirements)
-    by_scenario = {}
-    for scenario in SCENARIO_LABELS:
-        df = load_coverage("vital", scenario)
-        by_scenario[scenario] = df[df.region == "Global"]
-    interval = by_scenario[1].interval_percent.iloc[0]
-    last_week = by_scenario[1].week.max()
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    title = (
-        "Global filtration supply against workforce requirements\n"
-        f"medians with {interval:.0f}% uncertainty intervals"
-    )
-    _draw_scenario_coverage_ax(
-        ax, by_scenario, essential_level, last_week, title=title, ylim=(0, 40)
-    )
-    fig.tight_layout()
-    _save_figure(fig, output_path)
-
-
-def plot_scenario_coverage_two_panel(output_path: Path) -> None:
-    """
-    Global coverage over time: full y-range above, 0–50% zoom below.
-
-    Arguments:
-        output_path (Path): PNG to write.
-    """
-    requirements = load_requirements()
-    essential_level = essential_requirement_level(requirements)
-    by_scenario = {}
-    for scenario in SCENARIO_LABELS:
-        df = load_coverage("vital", scenario)
-        by_scenario[scenario] = df[df.region == "Global"]
-    interval = by_scenario[1].interval_percent.iloc[0]
-    last_week = by_scenario[1].week.max()
-    zoom_ylim = (0, 60)
-
-    fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
-    title_line = f"Medians ± {interval:.0f}% uncertainty intervals"
-    _draw_scenario_coverage_ax(
-        ax_top,
-        by_scenario,
-        essential_level,
-        last_week,
-        title=(
-            "Global filtration supply against workforce requirements (full scale)\n"
-            f"{title_line}"
-        ),
-        show_legend=False,
-        show_xlabel=False,
-    )
-    ax_top.add_patch(
-        Rectangle(
-            (1, zoom_ylim[0]),
-            last_week - 1,
-            zoom_ylim[1] - zoom_ylim[0],
-            fill=False,
-            linestyle="--",
-            linewidth=1.2,
-            edgecolor="0.25",
-            zorder=10,
-        )
-    )
-    _draw_scenario_coverage_ax(
-        ax_bottom,
-        by_scenario,
-        essential_level,
-        last_week,
-        title=(
-            "Global filtration supply against workforce requirements (0–60% scale)\n"
-            f"{title_line}"
-        ),
-        show_legend=False,
-        ylim=zoom_ylim,
-    )
-    label_x, label_y = SCENARIO_COVERAGE_PANEL_LABEL_XY
-    label_panel(ax_top, "a", x=label_x, y=label_y)
-    label_panel(ax_bottom, "b", x=label_x, y=label_y)
-    fig.subplots_adjust(hspace=0.35, bottom=0.12)
-    fig.legend(
-        *ax_top.get_legend_handles_labels(),
-        fontsize=9,
-        loc="center",
-        bbox_to_anchor=(0.5, 0.02),
-        ncol=2,
-        frameon=LEGEND_FRAMEON,
-        framealpha=0.9,
-    )
-    _save_figure(fig, output_path)
+    ax.set_title(title, fontweight="bold")
 
 
 def mask_requirement_ratios() -> dict:
@@ -369,84 +236,24 @@ def mask_requirement_ratios() -> dict:
     Returns:
         dict: Mask efficiency to requirement ratio.
     """
-    settings = pd.read_csv(SCALE_UP_SETTINGS).set_index("setting")["value"]
-    qer_ratio = ew.settings_qer_ratio(settings)
-    mapped = ew.ashrae_mapped_groups(ESSENTIAL_WORKERS_DATA)
+    parameters, _ = read_parameters(ESSENTIAL_WORKERS_PARAMETERS)
+    rooms = ecadr.load_room_types()
+    qer = ecadr.qer_ratio(parameters)
     vital_workers = (
-        pd.read_csv(ESSENTIAL_WORKERS_RESULTS / "EssentialWorkersByGroup.csv")
+        pd.read_csv(ESSENTIAL_WORKERS_RESULTS / "essential_workers_by_group.csv")
         .groupby("occupational_group")["Indoor Vital Workers"]
         .sum()
     )
 
     def vital_requirement(mask_healthcare, mask_other):
-        net = ew.net_ecadr_by_group(
-            mapped, qer_ratio, mask_healthcare, mask_other, ew.EXISTING_AIRFLOW_WEIGHT
-        )
-        return sum(vital_workers[group] * net[group] for group in vital_workers.index)
+        net = ecadr.scale_rooms(rooms, parameters, qer, mask_healthcare, mask_other)
+        return (vital_workers * net.net.set_axis(rooms.occupational_group)).sum()
 
-    base = vital_requirement(
-        float(settings["u_new_healthcare"]), float(settings["u_new_other"])
-    )
-    return {mask: vital_requirement(mask, mask) / base for mask in ew.MASK_EFFICIENCIES}
-
-
-def plot_measles_mask_coverage(output_path: Path, scenario: int = 2) -> None:
-    """
-    Global measles coverage for a range of mask efficiencies.
-
-    Supply does not depend on masks and the requirement is a fixed number, so
-    coverage at each mask efficiency is the settings-mask coverage divided by
-    that mask's requirement ratio.
-
-    Arguments:
-        output_path (Path): PNG to write.
-        scenario (int): 1, 2 or 3.
-    """
-    df = load_coverage("vital", scenario)
-    df = df[df.region == "Global"]
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for mask, ratio in mask_requirement_ratios().items():
-        median = df.coverage_median / ratio
-        (line,) = ax.plot(df.week, median, linewidth=2)
-        ax.fill_between(
-            df.week,
-            df.coverage_lower / ratio,
-            df.coverage_upper / ratio,
-            color=line.get_color(),
-            alpha=0.2,
-            linewidth=0,
-        )
-        # Label where the line leaves the capped axis, or at its end.
-        above = median > 100
-        if above.any():
-            point, offset, va = (df.week[above.idxmax()], 100), (4, -6), "top"
-        else:
-            point, offset, va = (df.week.iloc[-1], median.iloc[-1]), (4, 0), "center"
-        ax.annotate(
-            f"{mask:g}",
-            point,
-            xytext=offset,
-            textcoords="offset points",
-            va=va,
-            color=line.get_color(),
-            fontweight="bold",
-            annotation_clip=False,
-        )
-    ax.set_xlim(1, df.week.max())
-    ax.set_ylim(0, 100)
-    ax.set_xlabel("Weeks since the start of the pandemic")
-    ax.set_ylabel("% of indoor vital worker requirement")
-    ax.set_title(
-        "Global filtration supply against measles requirements, "
-        "lines labelled by mask efficiency\n"
-        f"{SCENARIO_LABELS[scenario]}, medians with "
-        f"{df.interval_percent.iloc[0]:.0f}% uncertainty intervals",
-        fontweight="bold",
-    )
-    ax.grid(True, linestyle="--", alpha=0.4)
-    fig.tight_layout()
-    _save_figure(fig, output_path)
+    base = vital_requirement(parameters["u_new_healthcare"], parameters["u_new_other"])
+    return {
+        mask: vital_requirement(mask, mask) / base
+        for mask in ecadr.mask_efficiencies(parameters)
+    }
 
 
 def plot_measles_mask_requirements(output_path: Path, scenario: int = 2) -> None:
@@ -525,7 +332,7 @@ def plot_measles_mask_requirements(output_path: Path, scenario: int = 2) -> None
     )
     ax.grid(True, linestyle="--", alpha=0.4)
     fig.tight_layout()
-    _save_figure(fig, output_path)
+    save_figure(fig, output_path)
 
 
 def plot_stacked_channels(
@@ -580,96 +387,7 @@ def plot_stacked_channels(
         framealpha=0.9,
     )
     fig.tight_layout()
-    _save_figure(fig, output_path)
-
-
-def plot_single_region_coverage_map(
-    output_path: Path,
-    scenario: int,
-    week: int,
-    label: str,
-    title: str,
-) -> None:
-    """
-    One world map of coverage by UN region at a chosen week.
-
-    Arguments:
-        output_path (Path): PNG to write.
-        scenario (int): 1, 2 or 3.
-        week (int): Week to map.
-        label (str): "vital" or "essential".
-        title (str): Figure title.
-    """
-    df = load_coverage(label, scenario)
-    at_week = df[(df.week == week) & (df.region != "Global")]
-    if at_week.empty:
-        raise ValueError(f"No {label} coverage at week {week}")
-
-    data = expand_regions_to_countries(at_week, "region", "coverage_median")
-    fig, ax = plt.subplots(figsize=(10, 5.6), layout="constrained")
-    mappable = draw_world_choropleth(
-        ax,
-        data,
-        iso_col="Country Code",
-        value_col="coverage_median",
-        cmap=REGION_COVERAGE_CMAP,
-        cmap_range=CMAP_RANGE,
-        vmin=0.0,
-        vmax=REGION_COVERAGE_VMAX,
-        alpha=REGION_COVERAGE_ALPHA,
-    )
-    ax.set_title(title, fontsize=12, fontweight="bold", pad=6)
-    add_horizontal_colorbar(fig, mappable, ax, "% of indoor workers covered")
-    _save_figure(fig, output_path)
-
-
-def plot_region_coverage_maps(output_path: Path, scenario: int, week: int) -> None:
-    """
-    Coverage by UN region at one week: indoor essential above, indoor vital below.
-
-    Arguments:
-        output_path (Path): PNG to write.
-        scenario (int): 1, 2 or 3.
-        week (int): Week to map.
-    """
-    panels = []
-    for letter, label, name in [
-        ("a", "essential", "Indoor essential workers"),
-        ("b", "vital", "Indoor vital workers"),
-    ]:
-        df = load_coverage(label, scenario)
-        at_week = df[(df.week == week) & (df.region != "Global")]
-        if at_week.empty:
-            raise ValueError(f"No {label} coverage at week {week}")
-        panels.append(
-            (
-                letter,
-                expand_regions_to_countries(at_week, "region", "coverage_median"),
-                f"{name} covered by filtration (week {week})",
-            )
-        )
-
-    fig, axes = plt.subplots(2, 1, figsize=(10, 9), layout="constrained")
-
-    mappable = None
-    for ax, (letter, data, title) in zip(axes, panels):
-        mappable = draw_world_choropleth(
-            ax,
-            data,
-            iso_col="Country Code",
-            value_col="coverage_median",
-            cmap=REGION_COVERAGE_CMAP,
-            cmap_range=CMAP_RANGE,
-            vmin=0.0,
-            vmax=REGION_COVERAGE_VMAX,
-            alpha=REGION_COVERAGE_ALPHA,
-        )
-        label_panel(ax, letter)
-        ax.set_title(title, fontsize=12, fontweight="bold", pad=6)
-
-    # Both panels share one scale, so one bar spans them
-    add_horizontal_colorbar(fig, mappable, list(axes), "% of indoor workers covered")
-    _save_figure(fig, output_path)
+    save_figure(fig, output_path)
 
 
 def plot_supply_and_coverage_maps(output_path: Path, scenario: int, week: int) -> None:
@@ -709,8 +427,7 @@ def plot_supply_and_coverage_maps(output_path: Path, scenario: int, week: int) -
     )
     label_panel(ax_supply, "a")
     ax_supply.set_title(
-        # f"Filtration supply by UN region (week {week})",
-        "Filtration supply by UN region after 3 months",
+        f"Filtration supply by UN region {when_label(week)}",
         fontsize=12,
         fontweight="bold",
         pad=6,
@@ -729,8 +446,7 @@ def plot_supply_and_coverage_maps(output_path: Path, scenario: int, week: int) -
     )
     label_panel(ax_coverage, "b")
     ax_coverage.set_title(
-        # f"Indoor vital workers covered by filtration (week {week})",
-        "Indoor vital workers covered by filtration after 3 months",
+        f"Indoor vital workers covered by filtration {when_label(week)}",
         fontsize=12,
         fontweight="bold",
         pad=6,
@@ -742,7 +458,7 @@ def plot_supply_and_coverage_maps(output_path: Path, scenario: int, week: int) -
         fig, coverage_mappable, ax_coverage, "% of indoor vital workers covered"
     )
 
-    _save_figure(fig, output_path)
+    save_figure(fig, output_path)
 
 
 def plot_covid_measles_scenario_coverage(output_path: Path) -> None:
@@ -787,8 +503,6 @@ def plot_covid_measles_scenario_coverage(output_path: Path) -> None:
                 f"Filtration supply against workforce requirements\n"
                 f"{name}"
             ),
-            ylim=(0, essential_level),
-            show_legend=False,
             show_xlabel=show_xlabel,
         )
     label_x, label_y = SCENARIO_COVERAGE_PANEL_LABEL_XY
@@ -804,7 +518,7 @@ def plot_covid_measles_scenario_coverage(output_path: Path) -> None:
         frameon=LEGEND_FRAMEON,
         framealpha=0.9,
     )
-    _save_figure(fig, output_path)
+    save_figure(fig, output_path)
 
 
 def plot_covid_measles_coverage_maps(
@@ -819,7 +533,6 @@ def plot_covid_measles_coverage_maps(
         week (int): Week to map.
         workforce (str): "vital" or "essential".
     """
-    when = "after 3 months" if week == 13 else f"at week {week}"
     panels = []
     for letter, pathogen, name in [
         ("a", "covid", "COVID-level transmissibility"),
@@ -833,7 +546,7 @@ def plot_covid_measles_coverage_maps(
             (
                 letter,
                 expand_regions_to_countries(at_week, "region", "coverage_median"),
-                f"{name}: indoor {workforce} workers covered {when}",
+                f"{name}: indoor {workforce} workers covered {when_label(week)}",
             )
         )
 
@@ -857,90 +570,45 @@ def plot_covid_measles_coverage_maps(
     add_horizontal_colorbar(
         fig, mappable, list(axes), f"% of indoor {workforce} worker requirement"
     )
-    _save_figure(fig, output_path)
+    save_figure(fig, output_path)
 
 
-def main(output_dir: Path, scenario: int, week: int) -> None:
+def main(output_dir: Path, scenario: int) -> None:
+    """
+    Draw every filtration figure.
+
+    Arguments:
+        output_dir (Path): Folder for the PNGs.
+        scenario (int): Scenario for the stacked figures, mask figure and maps.
+    """
     apply_allfed_style()
-
-    scenario_path = output_dir / "ScenarioCoverage_Manuscript.png"
-    plot_scenario_coverage(scenario_path)
-    print(f"Wrote {scenario_path}")
-
-    scenario_two_panel_path = output_dir / "ScenarioCoverage_Manuscript_two_panel.png"
-    plot_scenario_coverage_two_panel(scenario_two_panel_path)
-    print(f"Wrote {scenario_two_panel_path}")
-
-    covid_measles_path = output_dir / "ScenarioCoverage_CovidMeasles.png"
-    plot_covid_measles_scenario_coverage(covid_measles_path)
-    print(f"Wrote {covid_measles_path}")
-
-    mask_path = output_dir / "ScenarioCoverage_Measles_MaskEfficiency.png"
-    plot_measles_mask_coverage(mask_path)
-    print(f"Wrote {mask_path}")
-
-    mask_ecadr_path = output_dir / "ScenarioECADR_Measles_MaskEfficiency.png"
-    plot_measles_mask_requirements(mask_ecadr_path)
-    print(f"Wrote {mask_ecadr_path}")
-
-    stacked_path = output_dir / "Global_stacked_cadr.png"
-    plot_stacked_channels(stacked_path, scenario)
-    print(f"Wrote {stacked_path}")
-
-    cr_path = output_dir / "Global_stacked_cadr_CR_boxes_prioritized.png"
+    plot_covid_measles_scenario_coverage(output_dir / "scenario_coverage_covid_measles.png")
+    plot_measles_mask_requirements(
+        output_dir / "scenario_ecadr_measles_mask_efficiency.png", scenario
+    )
+    plot_stacked_channels(output_dir / "global_stacked_cadr.png", scenario)
     plot_stacked_channels(
-        cr_path,
+        output_dir / "global_stacked_cadr_cr_boxes_prioritized.png",
         scenario,
         results_dir=CR_BOXES_PRIORITIZED_RESULTS,
         title_suffix="CR boxes prioritized (panel filters diverted from PACs)",
     )
-    print(f"Wrote {cr_path}")
-
-    map_path = output_dir / f"FiltrationCoverageByRegion_Manuscript_Week{week}.png"
-    plot_region_coverage_maps(map_path, scenario, week)
-    print(f"Wrote {map_path}")
-
-    supply_path = output_dir / f"FiltrationSupplyAndCoverage_Manuscript_Week{week}.png"
-    plot_supply_and_coverage_maps(supply_path, scenario, week)
-    print(f"Wrote {supply_path}")
-
-    pathogen_map_path = (
-        output_dir / f"FiltrationVitalCoverage_CovidMeasles_Week{week}.png"
+    plot_supply_and_coverage_maps(
+        output_dir / "supply_and_coverage_week26.png", scenario, 26
     )
+    for week in [13, 26]:
+        plot_covid_measles_coverage_maps(
+            output_dir / f"vital_coverage_covid_measles_week{week}.png",
+            scenario,
+            week,
+            workforce="vital",
+        )
     plot_covid_measles_coverage_maps(
-        pathogen_map_path, scenario, week, workforce="vital"
-    )
-    print(f"Wrote {pathogen_map_path}")
-
-    pathogen_map_path = (
-        output_dir / f"FiltrationEssentialCoverage_CovidMeasles_Week{week}.png"
-    )
-    plot_covid_measles_coverage_maps(
-        pathogen_map_path, scenario, week, workforce="essential"
-    )
-    print(f"Wrote {pathogen_map_path}")
-
-    vital_path = output_dir / f"FiltrationCoverageVital_Manuscript_Week{week}.png"
-    plot_single_region_coverage_map(
-        vital_path,
+        output_dir / "essential_coverage_covid_measles_week26.png",
         scenario,
-        week,
-        "vital",
-        f"Indoor vital workers covered by filtration (week {week})",
+        26,
+        workforce="essential",
     )
-    print(f"Wrote {vital_path}")
-
-    essential_path = (
-        output_dir / f"FiltrationCoverageEssential_Manuscript_Week{week}.png"
-    )
-    plot_single_region_coverage_map(
-        essential_path,
-        scenario,
-        week,
-        "essential",
-        f"Indoor essential workers covered by filtration (week {week})",
-    )
-    print(f"Wrote {essential_path}")
 
 
 if __name__ == "__main__":
@@ -948,7 +616,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=VISUALIZATIONS_RESULTS,
+        default=FILTRATION_SCALE_UP_VISUALIZATIONS,
         help="Directory for PNG outputs",
     )
     parser.add_argument(
@@ -956,13 +624,7 @@ if __name__ == "__main__":
         type=int,
         default=2,
         choices=[1, 2, 3],
-        help="Scenario for the stacked figure and the maps",
-    )
-    parser.add_argument(
-        "--week",
-        type=int,
-        default=26,
-        help="Week to map (13 is three months)",
+        help="Scenario for the stacked figures, mask figure and maps",
     )
     args = parser.parse_args()
-    main(args.output_dir, args.scenario, args.week)
+    main(args.output_dir, args.scenario)

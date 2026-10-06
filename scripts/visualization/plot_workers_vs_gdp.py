@@ -6,31 +6,25 @@ Produces:
     vs log GDP per capita
   - Food as a share of essential / vital (and indoor) workforce vs log GDP
 
-Also writes a correlation summary CSV under results/essential_workers/.
+Reads the tables written by src/essential_workers_validation.py.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from viz_common import (
-    ESSENTIAL_WORKERS_RESULTS,
-    SAVE_DPI,
-    VISUALIZATIONS_RESULTS,
-    apply_allfed_style,
+from viz_common import apply_allfed_style, save_figure
+from processing.paths import (
+    ESSENTIAL_WORKERS_VALIDATION,
+    ESSENTIAL_WORKERS_VISUALIZATIONS,
 )
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT / "src"))
-
-import essential_workers as ew  # noqa: E402
+GDP_PPP_COL = "GDP per capita, PPP (current international $)"
 
 LF_PANELS = [
     ("a", "%Essential Workers", "Essential workers (% of labour force)"),
@@ -47,6 +41,7 @@ FOOD_PANELS = [
 
 
 def _annotation(summary: pd.DataFrame, column: str) -> str:
+    """Correlation label for one panel."""
     row = summary.loc[summary["column"] == column].iloc[0]
     return (
         f"Spearman ρ = {row['Spearman ρ']:.2f}\n"
@@ -65,6 +60,18 @@ def _scatter_grid(
     y_as_percent: bool,
     ylabel: str,
 ) -> None:
+    """
+    Four scatter plots of shares against GDP per capita, with trend lines.
+
+    Arguments:
+        merged (pandas.DataFrame): worker_shares_vs_gdp.csv.
+        summary (pandas.DataFrame): worker_shares_vs_gdp_correlations.csv.
+        panels (list): (panel letter, column, title) for each panel.
+        output_path (Path): PNG to write.
+        gdp_col (str): GDP column for the x-axis.
+        y_as_percent (bool): Multiply shares by 100.
+        ylabel (str): y-axis label.
+    """
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.5))
     fig.subplots_adjust(
         left=0.08, right=0.98, top=0.94, bottom=0.08, hspace=0.32, wspace=0.25
@@ -121,49 +128,40 @@ def _scatter_grid(
         ax.set_xlabel("GDP per capita, PPP (int'l $)", fontsize=9)
         ax.set_ylabel(ylabel, fontsize=9)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=SAVE_DPI)
-    plt.close(fig)
+    save_figure(fig, output_path)
 
 
 def main(output_dir: Path) -> None:
+    """
+    Draw both GDP scatter grids.
+
+    Arguments:
+        output_dir (Path): Folder for the PNGs.
+    """
     apply_allfed_style()
-    lf_df = pd.read_csv(ESSENTIAL_WORKERS_RESULTS / "EssentialWorkersByCountry.csv")
-    group_df = pd.read_csv(ESSENTIAL_WORKERS_RESULTS / "EssentialWorkersByGroup.csv")
-    merged, summary = ew.summarize_worker_shares_vs_gdp(lf_df, group_df)
-
-    corr_path = ESSENTIAL_WORKERS_RESULTS / "WorkerShares_vs_GDP_Correlations.csv"
-    summary.to_csv(corr_path, index=False)
-    print(f"Wrote {corr_path}")
+    merged = pd.read_csv(ESSENTIAL_WORKERS_VALIDATION / "worker_shares_vs_gdp.csv")
+    summary = pd.read_csv(
+        ESSENTIAL_WORKERS_VALIDATION / "worker_shares_vs_gdp_correlations.csv"
+    )
     print(summary.to_string(index=False))
-
-    merged_path = ESSENTIAL_WORKERS_RESULTS / "WorkerShares_vs_GDP.csv"
-    merged.to_csv(merged_path, index=False)
-    print(f"Wrote {merged_path}")
-
-    lf_path = output_dir / "WorkerShares_vs_GDP_PPP.png"
     _scatter_grid(
         merged,
         summary,
         LF_PANELS,
-        lf_path,
-        gdp_col=ew.GDP_PPP_COL,
+        output_dir / "worker_shares_vs_gdp_ppp.png",
+        gdp_col=GDP_PPP_COL,
         y_as_percent=True,
         ylabel="% of labour force",
     )
-    print(f"Wrote {lf_path}")
-
-    food_path = output_dir / "FoodShareOfWorkforce_vs_GDP_PPP.png"
     _scatter_grid(
         merged,
         summary,
         FOOD_PANELS,
-        food_path,
-        gdp_col=ew.GDP_PPP_COL,
+        output_dir / "food_share_of_workforce_vs_gdp_ppp.png",
+        gdp_col=GDP_PPP_COL,
         y_as_percent=True,
         ylabel="% of essential / vital workforce",
     )
-    print(f"Wrote {food_path}")
 
 
 if __name__ == "__main__":
@@ -171,7 +169,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=VISUALIZATIONS_RESULTS,
+        default=ESSENTIAL_WORKERS_VISUALIZATIONS,
         help="Directory for PNG outputs",
     )
     args = parser.parse_args()

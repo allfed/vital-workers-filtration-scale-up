@@ -21,28 +21,16 @@ SAVE_DPI = 300
 NATURAL_EARTH_110M_URL = (
     "https://naciscdn.org/naturalearth/110m/cultural/" "ne_110m_admin_0_countries.zip"
 )
-ALLFED_MAP_BORDER_URL = (
-    "https://raw.githubusercontent.com/ALLFED/ALLFED-map-border/main/border.geojson"
-)
 # Published ALLFED maps use Winkel Tripel, a compromise projection chosen for
 # readability. It preserves neither area, angle nor distance, so it is for
 # display only.
 WINKEL_TRIPEL = "+proj=wintri"
 
-# Set to True to draw the ALLFED map outline on every choropleth.
-SHOW_MAP_BORDER = False
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-from paths import (  # noqa: E402,F401
-    ESSENTIAL_WORKERS_RESULTS,
-    CR_BOXES_PRIORITIZED_RESULTS,
-    PACS_PRIORITIZED_RESULTS,
-    SCALE_UP_RESULTS,
-    VISUALIZATIONS_RESULTS,
-)
+from processing.paths import ESSENTIAL_WORKERS_RESULTS  # noqa: E402
 
 
 def get_cmap(name: str, start: float = 0.0, stop: float = 1.0) -> Colormap:
@@ -80,7 +68,7 @@ def load_country_region_map(
     ew_csv: Optional[Path] = None,
 ) -> pd.DataFrame:
     """Country ISO3 → UN region from essential workers output."""
-    path = ew_csv or (ESSENTIAL_WORKERS_RESULTS / "EssentialWorkersByCountry.csv")
+    path = ew_csv or (ESSENTIAL_WORKERS_RESULTS / "essential_workers_by_country.csv")
     return (
         pd.read_csv(path)[["Country Code", "Region"]]
         .dropna()
@@ -124,10 +112,18 @@ def load_world() -> gpd.GeoDataFrame:
     return world.to_crs(WINKEL_TRIPEL)
 
 
-@lru_cache(maxsize=1)
-def load_map_border() -> gpd.GeoDataFrame:
-    """ALLFED map outline. Already in Winkel Tripel despite its stated CRS."""
-    return gpd.read_file(ALLFED_MAP_BORDER_URL)
+def save_figure(fig: plt.Figure, output_path: Path) -> None:
+    """
+    Save a figure at the ALLFED resolution, trimmed to its contents, and close it.
+
+    Arguments:
+        fig (matplotlib.figure.Figure): Figure to save.
+        output_path (Path): PNG to write. Its folder is created if needed.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=SAVE_DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {output_path}")
 
 
 def label_panel(ax: plt.Axes, letter: str, x: float = 0.05, y: float = 1.065) -> None:
@@ -227,10 +223,6 @@ def draw_world_choropleth(
         linewidth=0.1,
         alpha=alpha,
     )
-    if SHOW_MAP_BORDER:
-        load_map_border().plot(
-            ax=ax, edgecolor="black", linewidth=0.1, facecolor="none"
-        )
     ax.set_axis_off()
     norm = plt.Normalize(vmin=vmin, vmax=vmax)
     return plt.cm.ScalarMappable(norm=norm, cmap=cmap_obj)

@@ -41,17 +41,15 @@ notebooks = [
     "tqdm",
 ]
 
-# The analysis modules sit directly in src/ and are imported by name, for
-# example "import scale_up_model", so they are listed as top-level modules
-# rather than found as packages.
+# The model modules sit directly in src/ and are imported by name, for example
+# "import filtration_scale_up_model". Shared helpers live in src/processing/.
 [tool.setuptools]
+packages = ["processing"]
 py-modules = [
     "essential_workers",
-    "preprocessing",
-    "paths",
-    "scale_up_model",
-    "linear_models",
-    "mc_distributions",
+    "essential_workers_validation",
+    "ecadr_requirements",
+    "filtration_scale_up_model",
 ]
 
 [tool.setuptools.package-dir]
