@@ -8,6 +8,7 @@ Reads the scenario results written by ``src/scale_up_model.py`` and produces:
   - a two-panel map of regional essential-requirement coverage, COVID above
     and measles below
   - global supply scenarios for a COVID-like pathogen above and measles below
+  - scenario 2 measles coverage for a range of mask efficiencies
   - separate maps for indoor vital and indoor essential coverage
 
 Coverage is expressed as a share of the indoor vital worker requirement. The
@@ -36,6 +37,8 @@ from viz_common import (
     expand_regions_to_countries,
     label_panel,
 )
+import essential_workers as ew  # noqa: E402
+from paths import ESSENTIAL_WORKERS_DATA, SCALE_UP_SETTINGS  # noqa: E402
 
 # cmasher colormap names; change these to try other palettes from the library.
 # CMAP_RANGE drops the black tip of arctic_r so the highest values stay navy.
@@ -74,9 +77,9 @@ STACK_CHANNEL_COLORS = {
 }
 
 SCENARIO_LABELS = {
-    3: "Scenario 1: growth based on mask production during COVID-19",
+    1: "Scenario 1: higher factory utilisation only",
     2: "Scenario 2: growth capped by meltblown supply",
-    1: "Scenario 3: higher factory utilisation only",
+    3: "Scenario 3: growth based on mask production during COVID-19",
 }
 
 SCENARIO_COLORS = {
@@ -351,6 +354,177 @@ def plot_scenario_coverage_two_panel(output_path: Path) -> None:
         frameon=LEGEND_FRAMEON,
         framealpha=0.9,
     )
+    _save_figure(fig, output_path)
+
+
+def mask_requirement_ratios() -> dict:
+    """
+    Global indoor vital requirement at each mask efficiency, relative to settings.
+
+    The same mask efficiency is used in health care and elsewhere. Requirements
+    are summed from the group table, which leaves out the few countries whose
+    values are filled in from neighbours, so the ratios are close but not
+    exact.
+
+    Returns:
+        dict: Mask efficiency to requirement ratio.
+    """
+    settings = pd.read_csv(SCALE_UP_SETTINGS).set_index("setting")["value"]
+    qer_ratio = ew.settings_qer_ratio(settings)
+    mapped = ew.ashrae_mapped_groups(ESSENTIAL_WORKERS_DATA)
+    vital_workers = (
+        pd.read_csv(ESSENTIAL_WORKERS_RESULTS / "EssentialWorkersByGroup.csv")
+        .groupby("occupational_group")["Indoor Vital Workers"]
+        .sum()
+    )
+
+    def vital_requirement(mask_healthcare, mask_other):
+        net = ew.net_ecadr_by_group(
+            mapped, qer_ratio, mask_healthcare, mask_other, ew.EXISTING_AIRFLOW_WEIGHT
+        )
+        return sum(vital_workers[group] * net[group] for group in vital_workers.index)
+
+    base = vital_requirement(
+        float(settings["u_new_healthcare"]), float(settings["u_new_other"])
+    )
+    return {mask: vital_requirement(mask, mask) / base for mask in ew.MASK_EFFICIENCIES}
+
+
+def plot_measles_mask_coverage(output_path: Path, scenario: int = 2) -> None:
+    """
+    Global measles coverage for a range of mask efficiencies.
+
+    Supply does not depend on masks and the requirement is a fixed number, so
+    coverage at each mask efficiency is the settings-mask coverage divided by
+    that mask's requirement ratio.
+
+    Arguments:
+        output_path (Path): PNG to write.
+        scenario (int): 1, 2 or 3.
+    """
+    df = load_coverage("vital", scenario)
+    df = df[df.region == "Global"]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for mask, ratio in mask_requirement_ratios().items():
+        median = df.coverage_median / ratio
+        (line,) = ax.plot(df.week, median, linewidth=2)
+        ax.fill_between(
+            df.week,
+            df.coverage_lower / ratio,
+            df.coverage_upper / ratio,
+            color=line.get_color(),
+            alpha=0.2,
+            linewidth=0,
+        )
+        # Label where the line leaves the capped axis, or at its end.
+        above = median > 100
+        if above.any():
+            point, offset, va = (df.week[above.idxmax()], 100), (4, -6), "top"
+        else:
+            point, offset, va = (df.week.iloc[-1], median.iloc[-1]), (4, 0), "center"
+        ax.annotate(
+            f"{mask:g}",
+            point,
+            xytext=offset,
+            textcoords="offset points",
+            va=va,
+            color=line.get_color(),
+            fontweight="bold",
+            annotation_clip=False,
+        )
+    ax.set_xlim(1, df.week.max())
+    ax.set_ylim(0, 100)
+    ax.set_xlabel("Weeks since the start of the pandemic")
+    ax.set_ylabel("% of indoor vital worker requirement")
+    ax.set_title(
+        "Global filtration supply against measles requirements, "
+        "lines labelled by mask efficiency\n"
+        f"{SCENARIO_LABELS[scenario]}, medians with "
+        f"{df.interval_percent.iloc[0]:.0f}% uncertainty intervals",
+        fontweight="bold",
+    )
+    ax.grid(True, linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    _save_figure(fig, output_path)
+
+
+def plot_measles_mask_requirements(output_path: Path, scenario: int = 2) -> None:
+    """
+    Global eCADR supply against the measles requirement at each mask efficiency.
+
+    Supply is the global coverage times the requirement it was measured
+    against, so it keeps the model's uncertainty interval. Each horizontal line
+    is the full indoor vital requirement at one mask efficiency.
+
+    Arguments:
+        output_path (Path): PNG to write.
+        scenario (int): 1, 2 or 3.
+    """
+    df = load_coverage("vital", scenario)
+    df = df[df.region == "Global"]
+    requirement = (
+        load_requirements().loc["Global", "indoor_vital_ecadr_l_per_s"] / 1e9
+    )
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    (supply,) = ax.plot(
+        df.week,
+        df.coverage_median / 100 * requirement,
+        linewidth=2,
+        color=SCENARIO_COLORS[scenario],
+    )
+    ax.fill_between(
+        df.week,
+        df.coverage_lower / 100 * requirement,
+        df.coverage_upper / 100 * requirement,
+        color=supply.get_color(),
+        alpha=0.2,
+        linewidth=0,
+    )
+    ax.annotate(
+        "Filtration supply",
+        (df.week.iloc[-1], df.coverage_median.iloc[-1] / 100 * requirement),
+        xytext=(4, 0),
+        textcoords="offset points",
+        va="center",
+        color=supply.get_color(),
+        fontweight="bold",
+        annotation_clip=False,
+    )
+
+    for mask, ratio in mask_requirement_ratios().items():
+        ax.plot(
+            [df.week.iloc[0], df.week.iloc[-1]],
+            [requirement * ratio] * 2,
+            linestyle="--",
+            linewidth=1.5,
+            color="0.35",
+        )
+        ax.annotate(
+            f"Global requirement ({mask:.0%} efficiency masks)",
+            (df.week.iloc[0], requirement * ratio),
+            xytext=(4, 3),
+            textcoords="offset points",
+            va="bottom",
+            color="0.35",
+            fontweight="bold",
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none", "pad": 1},
+            zorder=5,
+        )
+
+    ax.set_xlim(1, df.week.max())
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel("Weeks since the start of the pandemic")
+    ax.set_ylabel("Global eCADR (billion L/s)")
+    ax.set_title(
+        "Global filtration supply against indoor vital workforce requirements "
+        "at different mask efficiencies\n"
+        f"{SCENARIO_LABELS[scenario]}",
+        fontweight="bold",
+    )
+    ax.grid(True, linestyle="--", alpha=0.4)
+    fig.tight_layout()
     _save_figure(fig, output_path)
 
 
@@ -701,6 +875,14 @@ def main(output_dir: Path, scenario: int, week: int) -> None:
     plot_covid_measles_scenario_coverage(covid_measles_path)
     print(f"Wrote {covid_measles_path}")
 
+    mask_path = output_dir / "ScenarioCoverage_Measles_MaskEfficiency.png"
+    plot_measles_mask_coverage(mask_path)
+    print(f"Wrote {mask_path}")
+
+    mask_ecadr_path = output_dir / "ScenarioECADR_Measles_MaskEfficiency.png"
+    plot_measles_mask_requirements(mask_ecadr_path)
+    print(f"Wrote {mask_ecadr_path}")
+
     stacked_path = output_dir / "Global_stacked_cadr.png"
     plot_stacked_channels(stacked_path, scenario)
     print(f"Wrote {stacked_path}")
@@ -779,7 +961,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--week",
         type=int,
-        default=13,
+        default=26,
         help="Week to map (13 is three months)",
     )
     args = parser.parse_args()

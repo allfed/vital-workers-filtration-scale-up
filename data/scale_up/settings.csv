@@ -18,6 +18,8 @@ filters_per_cr_box,4.0,filters,Methods equation 5.,
 pc_fans_per_cr_box,6.0,fans,Methods equation 5.,
 scenario3_ramp_weeks,12.0,weeks,Methods 2.3.4.,
 IndoorContextMethod,jem_binary,,Essential-workers indoor fraction: onet_max | onet_banded | jem_partial | jem_binary.,data/essential_workers/job_exposure_matrix.xls
-ashrae_scale_factor,5.7,multiple,QER ratio x (measles / SARS-CoV-2) for Wells–Riley eCADR scale-up by room type (methods §2.2). Not a flat ECA multiplier.,https://doi.org/10.1111/ina.70036
+ashrae_pathogen,Measles,,Pathogen the ASHRAE-241 eCADR is scaled up to (name in viral_load_scaler.PATHOGENS).,https://doi.org/10.1016/j.gsf.2021.101285
+viral_load_percentile,96.3,percent,"Percentile at which pathogen and SARS-CoV-2 viral loads are compared to give the QER ratio. 96.3 is the percentile ASHRAE-241 is designed to. At the median, measles is 5.7.",
+viral_load_sd_mode,absolute,,"Viral-load SD of the pathogen: absolute uses its own Mikszewski et al. SD, relative scales ASHRAE-241's 1.4 by its SD relative to SARS-CoV-2.",https://doi.org/10.1016/j.gsf.2021.101285
 u_new_healthcare,0.30,fraction,Mask efficiency assumed for healthcare when scaling ASHRAE-241 eCADR. ASHRAE-241 base is 0.30; a lower value raises the healthcare requirement.,
 u_new_other,0.30,fraction,Mask efficiency assumed for non-healthcare spaces when scaling ASHRAE-241 eCADR. ASHRAE-241 base is 0; a higher value lowers those requirements.,

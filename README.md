@@ -27,6 +27,7 @@ This repo contains two main models that may be useful for other researchers:
 | `src/scale_up_model.py`                  | Methods 2.3 scale-up: PACs, CR boxes, coal baghouse filters                                                                       |
 | `src/linear_models.py`                   | Fits the coal-airflow and MVA-exponent regressions the model uses                                                                 |
 | `src/mc_distributions.py`                | Monte Carlo samplers for the uncertain parameters                                                                                 |
+| `src/viral_load_scaler.py`               | Viral-load ratio of a pathogen to SARS-CoV-2 at a percentile, used to scale ASHRAE-241 eCADR                                      |
 | `scripts/`                               | Processing notebooks that walk the user through each step of the analyses (`essential_workers_processing`, `scale_up_processing`) |
 | `scripts/visualization/`                 | ALLFED matplotlib figure scripts                                                                                                  |
 
@@ -102,7 +103,7 @@ uv export --format requirements-txt --no-hashes --no-emit-project -o requirement
 
 ## Results
 
-- `results/essential_workers/` — per-country/regional worker counts, per-group worker counts and ASHRAE-241 CADR requirements (room-type Wells–Riley scale-up using `ashrae_scale_factor` as the QER ratio \(x\), default 5.7 for measles, then outdoor-airflow credit), `ASHRAE241_scaled_table1.csv`, validation, overlap calibration, on-site housing requirements
+- `results/essential_workers/` — per-country/regional worker counts, per-group worker counts and ASHRAE-241 CADR requirements (room-type Wells–Riley scale-up whose QER ratio \(x\) is the ratio of the pathogen's viral load to SARS-CoV-2's at `viral_load_percentile`, from `src/viral_load_scaler.py`: 5.7 for measles at the median and 12.9 at the default 96.3th percentile; then outdoor-airflow credit), `ASHRAE241_scaled_table1.csv`, `ASHRAE241_scaled_by_mask_efficiency.csv` (scaled eCADR and eACH per group at 30–90% mask efficiency, negative values shown as zero), validation, overlap calibration, on-site housing requirements
 - `results/scale_up/PACs_prioritized/` — for each scenario: `weekly_ecadr_by_country_*`, `ecadr_by_channel_*` (weekly, global) and `coverage_{vital,essential}_*` (median and uncertainty interval by region and week), plus `requirements_by_region.csv`, the eCADR each region is measured against. This is the default run (panel filters stay with PACs). `results/scale_up/CR_boxes_prioritized/` holds the same outputs when panel filters are diverted to CR boxes
 - `results/linear_models/` — plots of the two fitted regressions
 - `results/visualizations/` — ALLFED-styled manuscript figures
@@ -131,7 +132,7 @@ the named colormap (the default drops the black tip of `arctic_r`).
 - `plot_essential_workers.py` — `PctVitalWorkers_Manuscript`, `PctEssentialWorkers_Manuscript` and the four-panel `PctWorkersByCountry_Manuscript_2x2`
 - `plot_workers_vs_gdp.py` — `WorkerShares_vs_GDP_PPP` and `FoodShareOfWorkforce_vs_GDP_PPP`, and the correlation tables behind them
 - `plot_group_composition.py` — `GroupComposition_Global`, the occupational make-up of the workforces
-- `plot_filtration_coverage.py` — `ScenarioCoverage_Manuscript` (all three scenarios with uncertainty intervals), `Global_stacked_cadr` (supply by channel, PACs prioritized), `Global_stacked_cadr_CR_boxes_prioritized` (same figure when panel filters are diverted to CR boxes), `FiltrationCoverageByRegion_Manuscript_Week13` (two-panel essential and vital maps), `FiltrationSupplyAndCoverage_Manuscript_Week13` (regional eCADR supply above, vital coverage below), plus single-panel vital and essential maps. Coverage is a share of the indoor vital requirement. Pass `--scenario` for the stacked figure and the maps, and `--week` for the mapped week
+- `plot_filtration_coverage.py` — `ScenarioCoverage_Manuscript` (all three scenarios with uncertainty intervals), `Global_stacked_cadr` (supply by channel, PACs prioritized), `Global_stacked_cadr_CR_boxes_prioritized` (same figure when panel filters are diverted to CR boxes), `FiltrationCoverageByRegion_Manuscript_Week13` (two-panel essential and vital maps), `FiltrationSupplyAndCoverage_Manuscript_Week13` (regional eCADR supply above, vital coverage below), plus single-panel vital and essential maps, the COVID-over-measles scenario and map figures, and `ScenarioCoverage_Measles_MaskEfficiency` (scenario 2 measles coverage for mask efficiencies from 0.3 to 0.9, capped at 100%). Coverage is a share of the indoor vital requirement. Pass `--scenario` for the stacked figure and the maps, and `--week` for the mapped week
 
 ---
 

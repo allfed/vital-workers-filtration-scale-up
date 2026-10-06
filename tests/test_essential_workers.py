@@ -997,10 +997,10 @@ def test_group_and_country_cadr_requirements(data_dir):
     assert retail["Indoor Vital Workers"] == pytest.approx(200_000)
 
     settings = pd.read_csv(SCALE_UP_SETTINGS).set_index("setting")["value"]
-    qer = float(settings["ashrae_scale_factor"])
+    qer = ew.settings_qer_ratio(settings)
     u_healthcare = float(settings["u_new_healthcare"])
     u_other = float(settings["u_new_other"])
-    mapped = ew._ashrae_mapped_groups(data_dir)
+    mapped = ew.ashrae_mapped_groups(data_dir)
 
     def expected_net(group_name):
         row = mapped.loc[mapped["occupational_group"] == group_name].iloc[0]
@@ -1046,7 +1046,7 @@ def test_group_and_country_cadr_requirements(data_dir):
 
 
 def test_ashrae_scaleup_table_matches_reference():
-    """Unmasked manufacturing matches Sheet1; a 0.3 mask lowers it to 158."""
+    """At QER 5.7, unmasked manufacturing is 374 L/s/p; a 0.3 mask lowers it to 158."""
     from paths import ESSENTIAL_WORKERS_DATA
 
     got = ew.build_ashrae_scaleup_table(
@@ -1055,18 +1055,12 @@ def test_ashrae_scaleup_table_matches_reference():
         u_new_healthcare=0.3,
         u_new_other=0.0,
     )
-    ref = pd.read_csv(ESSENTIAL_WORKERS_DATA / "ASHRAE Scaled Table 1 - Sheet1.csv")
-    health = got.merge(ref, on="Occupational group", suffixes=("_got", "_ref"))
-    health = health.loc[health["Occupational group"] == "Health"]
-    for col in ["k", "Scaled eCADR (L/s/p)", "Scaled eACH (/h)"]:
-        assert health[f"{col}_got"].iloc[0] == pytest.approx(
-            health[f"{col}_ref"].iloc[0], abs=0.05
-        )
-    food = got.merge(ref, on="Occupational group", suffixes=("_got", "_ref"))
-    food = food.loc[food["Occupational group"] == "Food"].iloc[0]
-    assert food["Scaled eCADR (L/s/p)_got"] == pytest.approx(
-        food["Scaled eCADR (L/s/p)_ref"], abs=0.05
-    )
+    food = got.loc[got["Occupational group"] == "Food"].iloc[0]
+    assert food["k"] == pytest.approx(15.0, abs=0.05)
+    assert food["Scaled eCADR (L/s/p)"] == 374
+    assert food["Scaled eACH (/h)"] == pytest.approx(7.9, abs=0.05)
+    health = got.loc[got["Occupational group"] == "Health"].iloc[0]
+    assert health["ASHRAE-241 room type"] == "Group treatment area"
     masked = ew.build_ashrae_scaleup_table(
         ESSENTIAL_WORKERS_DATA,
         qer_ratio=5.7,

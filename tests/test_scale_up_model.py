@@ -220,7 +220,9 @@ def test_real_settings_cover_everything_the_model_reads():
         "uncertainty_interval",
         "adjust_MVA_by_cost",
         "IndoorContextMethod",
-        "ashrae_scale_factor",
+        "ashrae_pathogen",
+        "viral_load_percentile",
+        "viral_load_sd_mode",
         "u_new_healthcare",
         "u_new_other",
     ]

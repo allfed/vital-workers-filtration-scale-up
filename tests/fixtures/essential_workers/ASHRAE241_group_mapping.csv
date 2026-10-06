@@ -1,6 +1,6 @@
 occupational_group,occupancy_group,occupancy_category
 Food,Industrial,Manufacturing
-Health,Health care,Patient room
+Health,Health care,Group treatment area
 Retail,Commercial/Retail,Retail
 Security,Commercial/Retail,Office
 Transport,Commercial/Retail,Transportation waiting

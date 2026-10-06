@@ -1,0 +1,10 @@
+Occupational group,ASHRAE-241 room type,eCADR (L/s/p),eACH (/h),eCADR 30% efficiency masks (L/s/p),eACH 30% efficiency masks (/h),eCADR 50% efficiency masks (L/s/p),eACH 50% efficiency masks (/h),eCADR 70% efficiency masks (L/s/p),eACH 70% efficiency masks (/h),eCADR 90% efficiency masks (L/s/p),eACH 90% efficiency masks (/h)
+Food,Manufacturing,25.0,0.5,421,8.8,191,4.0,37,0.8,0,0.0
+Health,Group treatment area,35.0,9.3,498,132.9,252,67.3,88,23.6,6,1.7
+Retail,Retail,20.0,1.8,188,16.9,90,8.1,25,2.3,0,0.0
+Security,Office,15.0,1.0,178,11.8,83,5.5,20,1.3,0,0.0
+Transport,Transportation waiting,30.0,1.1,343,12.4,161,5.8,40,1.4,0,0.0
+Manual,Manufacturing,25.0,0.5,421,8.8,191,4.0,37,0.8,0,0.0
+Cleaning,Office,15.0,1.0,178,11.8,83,5.5,20,1.3,0,0.0
+Tech,Office,15.0,1.0,178,11.8,83,5.5,20,1.3,0,0.0
+ArmedForces,Dayroom,20.0,3.6,157,28.3,77,13.9,24,4.4,0,0.0
