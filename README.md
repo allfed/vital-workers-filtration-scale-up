@@ -1,10 +1,10 @@
-# Modelling of In-room Filtration Supply and Essential Worker Requirements in Future Pandemics
+# Modelling of Essential and Vital Worker Requirements in Catastrophic Pandemics & Rapid Scale-up of Filtration
 
-A scale up simulation of various in-room filtration systems that could protect essential workers in the event of a catastrophic pandemic.  
+This repository is intended to allow others to use this work to estimate national PPE stockpile requirements, model the scale-up of alternative transmission-suppressing interventions, highlight global inequalities in pandemic response measures, or otherwise work towards pandemic resilience.
 
 This repo contains two main models that may be useful for other researchers:
 
-1. `src/essential_workers.py` estimates essential worker counts, vital worker counts, indoor essential worker counts, and indoor vital worker counts for all 196 UN member states and 21 additional territories. It also provides a sector breakdown for many of these countries so users can see indoor essential workers (or equivalent) in the food sector, healthcare sector, manual sector, etc. This may be useful for analysis on potential PPE stockpiles or scaling up other transmission reducing interventions.
+1. `src/essential_workers.py` estimates essential worker counts, vital worker counts, indoor essential worker counts, and indoor vital worker counts for all 196 UN member states and 21 additional territories, alongisde equivalent clean air delivery rates (eCADRs) for each grouping. It also provides a sector breakdown for many of these countries so users can see indoor essential workers (or equivalent) in the food sector, healthcare sector, manual sector, etc. This may be useful for analysis on potential PPE stockpiles or scaling up other transmission reducing interventions.
 2. `src/filtration_scale_up_model.py` models the scale-up of commercial portable air cleaners, DIY Corsi-Rosenthal boxes, and DIY coal baghouse filtration units during the first 6 months of a pandemic as transmissible as measles. This is provided globally and by UN region. We also provide country-level estimates, but recommend that these are not used unless the numbers are verified with national data.
 
 ---
@@ -39,8 +39,8 @@ This repo contains two main models that may be useful for other researchers:
 Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`.
 
 ```bash
-git clone https://github.com/SPROOK/InRoomAirFilterScaleUp.git
-cd InRoomAirFilterScaleUp
+git clone https://github.com/ALLFED/vital-workers-filtration-scale-up.git
+cd vital-workers-filtration-scale-up
 uv sync --extra dev --extra notebooks
 ```
 
